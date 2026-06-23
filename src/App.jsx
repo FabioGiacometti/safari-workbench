@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
+// ⚠ SECURITY EXPOSURE: VITE_SUPABASE_KEY is a service-role key bundled into the
+// browser bundle. This is an unresolved security issue. It will be removed once
+// all tabs are migrated to the server-side API (Steps C–E). Do not add new uses.
 import { supabase } from './supabase.js'
 import VenueCandidates from './VenueCandidates.jsx'
 import VenueCatalog from './VenueCatalog.jsx'
@@ -721,7 +724,7 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
 // App
 // ---------------------------------------------------------------------------
 
-export default function App() {
+export default function App({ session, onSignOut }) {
   const [activeSection, setActiveSection]           = useState('conflicts')
   const [conflicts, setConflicts]                   = useState([])
   const [selected, setSelected]                     = useState(null)
@@ -845,6 +848,10 @@ export default function App() {
           <TabButton label="Venues"           active={activeSection === 'venues-catalog'}      onClick={() => setActiveSection('venues-catalog')} />
           <TabButton label="Discrepancias"    active={activeSection === 'discrepancies'}       onClick={() => setActiveSection('discrepancies')} />
           <TabButton label="Crear Evento"     active={activeSection === 'crear-evento'}        onClick={() => setActiveSection('crear-evento')} />
+          <div className="ml-auto flex items-center gap-2">
+            {session?.user?.email && <span className="text-xs text-gray-400">{session.user.email}</span>}
+            {onSignOut && <button onClick={onSignOut} className="text-xs text-gray-400 hover:text-gray-700">Sign out</button>}
+          </div>
         </div>
         <div className="flex-1 overflow-hidden">
           {activeSection === 'venues'          && <VenueCandidates />}
@@ -869,6 +876,10 @@ export default function App() {
         <TabButton label="Venues"           active={false} onClick={() => setActiveSection('venues-catalog')} />
         <TabButton label="Discrepancias"    active={false} onClick={() => setActiveSection('discrepancies')} />
         <TabButton label="Crear Evento"     active={false} onClick={() => setActiveSection('crear-evento')} />
+        <div className="ml-auto flex items-center gap-2">
+          {session?.user?.email && <span className="text-xs text-gray-400">{session.user.email}</span>}
+          {onSignOut && <button onClick={onSignOut} className="text-xs text-gray-400 hover:text-gray-700">Sign out</button>}
+        </div>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
