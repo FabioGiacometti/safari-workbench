@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
+const _url  = import.meta.env.VITE_SUPABASE_URL
+const _anon = import.meta.env.VITE_SUPABASE_ANON_KEY
+if (!_url || !_anon) {
+  throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY — add them to Vercel environment variables')
+}
 // Uses the public anon key — safe to expose in the browser.
 // This client is only used for authentication, never for privileged DB access.
-const authClient = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY,
-)
+const authClient = createClient(_url, _anon)
 
 export { authClient }
 
