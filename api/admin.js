@@ -1,13 +1,14 @@
 // Single handler for all /api/admin/* routes.
 //
 // Reached two ways:
-//   - GET/POST /api/admin  → direct filesystem match (req.query._path undefined)
-//   - /api/admin/*         → vercel.json rewrite passes path as _path query param
+//   - GET/POST /api/admin       → direct filesystem match (_path absent)
+//   - /api/admin/:path*         → vercel.json rewrite sets _path query param
 //
-// Step A spike — diagnostic responses only. No database writes.
+// All business logic lives in src/api/ — this file stays thin.
 
 import { requireOperator } from '../src/api/auth.js'
 import { serverError } from '../src/api/errors.js'
+import { route } from '../src/api/router.js'
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store')
@@ -26,20 +27,15 @@ export default async function handler(req, res) {
     serverError(res, 'requireOperator threw', err)
     return
   }
-  if (!user) return // requireOperator already sent the 401/403
+  if (!user) return // requireOperator already sent 401/403
 
-  // Path comes from the rewrite _path param: "events/test-id/publish" → split to array
+  // Path segments from rewrite param: "events/test-id/publish" → ["events","test-id","publish"]
   const raw = req.query._path ?? ''
   const pathSegments = raw ? raw.split('/').filter(Boolean) : []
 
-  // Diagnostic response — no DB access, no side effects
-  res.status(501).json({
-    ok: false,
-    error: 'not_implemented',
-    diagnostic: {
-      method: req.method,
-      pathSegments,
-      operator: user.email,
-    },
-  })
+  try {
+    await route(req, res, user, pathSegments)
+  } catch (err) {
+    serverError(res, 'unhandled route error', err)
+  }
 }
