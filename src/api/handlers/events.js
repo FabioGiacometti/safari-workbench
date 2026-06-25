@@ -60,7 +60,7 @@ async function fetchEvent(db, id) {
 async function resolveVenue(db, venueId) {
   const { data, error } = await db
     .from('venues')
-    .select('id, canonical_name, lat, lng, merged_into')
+    .select('id, canonical_name, lat, lng, merged_into, city, region, geo_confidence')
     .eq('id', venueId)
     .single()
   if (error || !data) return { venue: null, error: 'venue_not_found' }
@@ -125,6 +125,9 @@ export async function create(req, res, user) {
     venue_name: venue.canonical_name,
     lat: venue.lat,
     lng: venue.lng,
+    city: venue.city ?? null,
+    region: venue.region ?? 'unknown',
+    geo_confidence: venue.geo_confidence ?? null,
     created_by: user.email,
     description: '',
     category: 'other',
