@@ -124,6 +124,7 @@ export async function create(req, res, user) {
     venue_id: venue.id,
     venue_name: venue.canonical_name,
     created_by: user.email,
+    description: '',
     ...fields,
     // Never accept these from body:
     actor: undefined,
