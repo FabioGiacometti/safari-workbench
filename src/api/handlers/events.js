@@ -123,8 +123,11 @@ export async function create(req, res, user) {
     dedup_key,
     venue_id: venue.id,
     venue_name: venue.canonical_name,
+    lat: venue.lat,
+    lng: venue.lng,
     created_by: user.email,
     description: '',
+    category: 'other',
     ...fields,
     // Never accept these from body:
     actor: undefined,
