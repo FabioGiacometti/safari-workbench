@@ -113,9 +113,12 @@ function AcceptPreview({ disc, onConfirm, onCancel, loading }) {
 // Row — single discrepancy
 // ---------------------------------------------------------------------------
 
-function DiscrepancyRow({ disc, onResolved, onRequestPreview, actionLoadingId, odd }) {
+function DiscrepancyRow({ disc, supportedFields, onResolved, onRequestPreview, actionLoadingId, odd }) {
   const [error, setError] = useState(null)
   const loading = actionLoadingId === disc.id
+
+  // null means not yet loaded — optimistically allow until we know
+  const acceptProviderOk = supportedFields === null || supportedFields.includes(disc.field_name)
 
   async function resolve(action) {
     setError(null)
@@ -185,14 +188,23 @@ function DiscrepancyRow({ disc, onResolved, onRequestPreview, actionLoadingId, o
             >
               {loading ? '…' : 'Conservar manual'}
             </button>
-            <button
-              onClick={() => onRequestPreview(disc)}
-              disabled={loading}
-              title="Ver preview y luego aceptar el valor del provider"
-              className="text-[10px] px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 disabled:opacity-40 text-left"
-            >
-              Aceptar provider
-            </button>
+            {acceptProviderOk ? (
+              <button
+                onClick={() => onRequestPreview(disc)}
+                disabled={loading}
+                title="Ver preview y luego aceptar el valor del provider"
+                className="text-[10px] px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 disabled:opacity-40 text-left"
+              >
+                Aceptar provider
+              </button>
+            ) : (
+              <span
+                title={`El campo "${disc.field_name}" no soporta aceptación automática`}
+                className="text-[10px] px-2 py-1 border border-gray-200 text-gray-400 rounded cursor-not-allowed text-left italic"
+              >
+                Aceptar provider N/A
+              </span>
+            )}
             <button
               onClick={() => resolve('dismissed')}
               disabled={loading}
@@ -220,9 +232,10 @@ function DiscrepancyRow({ disc, onResolved, onRequestPreview, actionLoadingId, o
 // ---------------------------------------------------------------------------
 
 export default function VenueDiscrepancies() {
-  const [rows, setRows]         = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState(null)
+  const [rows, setRows]                         = useState([])
+  const [supportedFields, setSupportedFields]   = useState(null)  // null = not yet loaded
+  const [loading, setLoading]                   = useState(true)
+  const [error, setError]                       = useState(null)
 
   // Filters
   const [filterStatus,   setFilterStatus]   = useState('open')
@@ -243,6 +256,9 @@ export default function VenueDiscrepancies() {
       const result = await adminFetch(`/discrepancies${qs ? `?${qs}` : ''}`)
       if (!result.ok) throw new Error(result.error ?? 'load failed')
       setRows(result.discrepancies ?? [])
+      if (result.accept_provider_supported_fields) {
+        setSupportedFields(result.accept_provider_supported_fields)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -451,6 +467,7 @@ export default function VenueDiscrepancies() {
                 <DiscrepancyRow
                   key={disc.id}
                   disc={disc}
+                  supportedFields={supportedFields}
                   onResolved={handleResolved}
                   onRequestPreview={setPreviewDisc}
                   actionLoadingId={previewLoading ? previewDisc?.id : null}

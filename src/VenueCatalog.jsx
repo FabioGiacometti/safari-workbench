@@ -114,7 +114,10 @@ async function fetchVenueByIdMinimal(id) {
 
 async function fetchVenueDiscrepancies(venueId) {
   const result = await adminFetch(`/venues/${venueId}/discrepancies`)
-  return result.discrepancies ?? []
+  return {
+    discrepancies: result.discrepancies ?? [],
+    supportedFields: result.accept_provider_supported_fields ?? null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +178,7 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
   const [mutations, setMutations]       = useState([])
   const [rules, setRules]               = useState([])
   const [discrepancies, setDiscrepancies] = useState([])
+  const [discSupportedFields, setDiscSupportedFields] = useState(null)
   const [mergedIntoVenue, setMergedIntoVenue] = useState(null)
   const [loading, setLoading]           = useState(true)
   const [error, setError]               = useState(null)
@@ -190,7 +194,7 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
     fetchVenueDetail(venueId)
       .then(async v => {
         setVenue(v)
-        const [evts, log, muts, rls, discs] = await Promise.all([
+        const [evts, log, muts, rls, discResult] = await Promise.all([
           fetchVenueEvents(venueId),
           fetchVenueMergeHistory(venueId),
           fetchVenueMutations(venueId),
@@ -201,7 +205,8 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
         setMergeLog(log)
         setMutations(muts)
         setRules(rls)
-        setDiscrepancies(discs)
+        setDiscrepancies(discResult.discrepancies)
+        setDiscSupportedFields(discResult.supportedFields)
 
         if (v.merged_into) {
           const target = await fetchVenueByIdMinimal(v.merged_into)
@@ -222,11 +227,12 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
 
     if (action === 'accept_provider') {
       // Re-fetch discrepancies and venue so the panel reflects the field change
-      const [freshDiscs, freshVenue] = await Promise.all([
+      const [discResult, freshVenue] = await Promise.all([
         fetchVenueDiscrepancies(venueId),
         fetchVenueDetail(venueId),
       ])
-      setDiscrepancies(freshDiscs)
+      setDiscrepancies(discResult.discrepancies)
+      setDiscSupportedFields(discResult.supportedFields)
       setVenue(freshVenue)
     } else {
       setDiscrepancies(prev => prev.map(d =>
@@ -446,6 +452,7 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
               <DiscrepancyInline
                 key={d.id}
                 disc={d}
+                supportedFields={discSupportedFields}
                 onResolve={resolveDisc}
               />
             ))}
@@ -474,11 +481,14 @@ function fmtDiscVal(raw) {
   return <span className="font-mono">{JSON.stringify(raw)}</span>
 }
 
-function DiscrepancyInline({ disc, onResolve }) {
+function DiscrepancyInline({ disc, supportedFields, onResolve }) {
   const [actionLoading, setActionLoading] = useState(null)
   const [showPreview, setShowPreview]     = useState(false)
   const { label, cls } = DISC_STATUS_LABELS[disc.status] ?? { label: disc.status, cls: 'bg-gray-100 text-gray-500' }
   const isOpen = disc.status === 'open'
+
+  // null = not yet loaded — optimistically allow until we know
+  const acceptProviderOk = supportedFields === null || supportedFields.includes(disc.field_name)
 
   async function handle(action) {
     setActionLoading(action)
@@ -521,13 +531,22 @@ function DiscrepancyInline({ disc, onResolve }) {
           >
             {actionLoading === 'keep_manual' ? '…' : 'Conservar manual'}
           </button>
-          <button
-            onClick={() => setShowPreview(true)}
-            disabled={!!actionLoading}
-            className="text-[10px] px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 disabled:opacity-40"
-          >
-            Aceptar provider
-          </button>
+          {acceptProviderOk ? (
+            <button
+              onClick={() => setShowPreview(true)}
+              disabled={!!actionLoading}
+              className="text-[10px] px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 disabled:opacity-40"
+            >
+              Aceptar provider
+            </button>
+          ) : (
+            <span
+              title={`El campo "${disc.field_name}" no soporta aceptación automática`}
+              className="text-[10px] px-2 py-1 border border-gray-200 text-gray-400 rounded cursor-not-allowed italic"
+            >
+              Aceptar provider N/A
+            </span>
+          )}
           <button
             onClick={() => handle('dismissed')}
             disabled={!!actionLoading}
