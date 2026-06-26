@@ -1,5 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from './supabase.js'
+import { authClient } from './LoginForm.jsx'
+
+async function adminFetch(path, options = {}) {
+  const { data: { session } } = await authClient.auth.getSession()
+  const token = session?.access_token
+  if (!token) throw new Error('No session — please sign in again')
+  const res = await fetch(`/api/admin${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers ?? {}) },
+  })
+  const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+  return { status: res.status, ...json }
+}
 
 const STATUS_LABELS = {
   open:            { label: 'Abierta',          cls: 'bg-red-100 text-red-700' },
@@ -101,24 +113,18 @@ function AcceptPreview({ disc, onConfirm, onCancel, loading }) {
 // Row — single discrepancy
 // ---------------------------------------------------------------------------
 
-function DiscrepancyRow({ disc, actor, onResolved, onRequestPreview, actionLoadingId, odd }) {
+function DiscrepancyRow({ disc, onResolved, onRequestPreview, actionLoadingId, odd }) {
   const [error, setError] = useState(null)
   const loading = actionLoadingId === disc.id
 
   async function resolve(action) {
-    if (!actor) {
-      setError('Seleccioná un actor antes de resolver.')
-      return
-    }
     setError(null)
     try {
-      const { data, error: rpcErr } = await supabase.rpc('resolve_venue_discrepancy', {
-        p_discrepancy_id: disc.id,
-        p_action: action,
-        p_actor: actor,
+      const result = await adminFetch(`/discrepancies/${disc.id}/resolve`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
       })
-      if (rpcErr) throw new Error(rpcErr.message)
-      if (data && data.ok === false) throw new Error(data.error ?? 'RPC returned ok=false')
+      if (!result.ok) throw new Error(result.error ?? 'resolve failed')
       onResolved(disc.id, action)
     } catch (err) {
       setError(err.message)
@@ -213,19 +219,10 @@ function DiscrepancyRow({ disc, actor, onResolved, onRequestPreview, actionLoadi
 // VenueDiscrepancies — main component
 // ---------------------------------------------------------------------------
 
-const ACTORS = ['fabio', 'admin']
-
 export default function VenueDiscrepancies() {
   const [rows, setRows]         = useState([])
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState(null)
-
-  // Actor — shared via localStorage with other sections
-  const [actor, setActor] = useState(() => localStorage.getItem('workbench:actor') || '')
-  function handleActorChange(a) {
-    setActor(a)
-    localStorage.setItem('workbench:actor', a)
-  }
 
   // Filters
   const [filterStatus,   setFilterStatus]   = useState('open')
@@ -238,23 +235,14 @@ export default function VenueDiscrepancies() {
     setLoading(true)
     setError(null)
     try {
-      let q = supabase
-        .from('venue_discrepancies')
-        .select(`
-          id, venue_id, field_name, manual_value, provider_value, provider,
-          detected_at, status, resolved_at, resolved_by, resolution,
-          venues ( id, canonical_name, fingerprint, city )
-        `)
-        .order('status',       { ascending: true })   // open sorts before others lexically
-        .order('detected_at',  { ascending: false })
-
-      if (filterStatus)   q = q.eq('status',   filterStatus)
-      if (filterProvider) q = q.eq('provider', filterProvider)
-      if (filterField)    q = q.eq('field_name', filterField)
-
-      const { data, error: err } = await q.limit(500)
-      if (err) throw new Error(err.message)
-      setRows(data ?? [])
+      const params = new URLSearchParams()
+      if (filterStatus)   params.set('status',   filterStatus)
+      if (filterProvider) params.set('provider', filterProvider)
+      if (filterField)    params.set('field',    filterField)
+      const qs = params.toString()
+      const result = await adminFetch(`/discrepancies${qs ? `?${qs}` : ''}`)
+      if (!result.ok) throw new Error(result.error ?? 'load failed')
+      setRows(result.discrepancies ?? [])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -269,9 +257,14 @@ export default function VenueDiscrepancies() {
   const [previewLoading, setPreviewLoading] = useState(false)
 
   function handleResolved(discId, action) {
+    if (action === 'accept_provider') {
+      // accept_provider changes the venue record too — re-fetch authoritative state
+      load()
+      return
+    }
     setRows(prev => prev.map(r =>
       r.id === discId
-        ? { ...r, status: action, resolved_at: new Date().toISOString(), resolved_by: actor }
+        ? { ...r, status: action, resolved_at: new Date().toISOString() }
         : r
     ))
   }
@@ -280,13 +273,11 @@ export default function VenueDiscrepancies() {
     if (!previewDisc) return
     setPreviewLoading(true)
     try {
-      const { data, error: rpcErr } = await supabase.rpc('resolve_venue_discrepancy', {
-        p_discrepancy_id: previewDisc.id,
-        p_action: 'accept_provider',
-        p_actor: actor,
+      const result = await adminFetch(`/discrepancies/${previewDisc.id}/resolve`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'accept_provider' }),
       })
-      if (rpcErr) throw new Error(rpcErr.message)
-      if (data && data.ok === false) throw new Error(data.error ?? 'RPC error')
+      if (!result.ok) throw new Error(result.error ?? 'resolve failed')
       handleResolved(previewDisc.id, 'accept_provider')
       setPreviewDisc(null)
     } catch (err) {
@@ -412,20 +403,6 @@ export default function VenueDiscrepancies() {
           />
         </div>
 
-        <div className="flex items-center gap-1.5 ml-auto">
-          <label className="text-[10px] text-gray-500 uppercase font-semibold">Actor</label>
-          <select
-            value={actor}
-            onChange={e => handleActorChange(e.target.value)}
-            className="text-[10px] border border-gray-300 rounded px-1.5 py-0.5 bg-white"
-          >
-            <option value="">—</option>
-            {ACTORS.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-          {!actor && (
-            <span className="text-[10px] text-orange-500 italic">requerido para resolver</span>
-          )}
-        </div>
       </div>
 
       {/* Error */}
@@ -474,7 +451,6 @@ export default function VenueDiscrepancies() {
                 <DiscrepancyRow
                   key={disc.id}
                   disc={disc}
-                  actor={actor}
                   onResolved={handleResolved}
                   onRequestPreview={setPreviewDisc}
                   actionLoadingId={previewLoading ? previewDisc?.id : null}

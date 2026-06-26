@@ -1,6 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from './supabase.js'
 import VenueEditForm from './VenueEditForm.jsx'
+import { authClient } from './LoginForm.jsx'
+
+async function adminFetch(path, options = {}) {
+  const { data: { session } } = await authClient.auth.getSession()
+  const token = session?.access_token
+  if (!token) throw new Error('No session — please sign in again')
+  const res = await fetch(`/api/admin${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers ?? {}) },
+  })
+  const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+  return { status: res.status, ...json }
+}
 
 const ACTORS = ['fabio', 'admin']
 
@@ -100,14 +113,8 @@ async function fetchVenueByIdMinimal(id) {
 }
 
 async function fetchVenueDiscrepancies(venueId) {
-  const { data } = await supabase
-    .from('venue_discrepancies')
-    .select('id, field_name, manual_value, provider_value, provider, detected_at, status, resolved_at, resolved_by, resolution')
-    .eq('venue_id', venueId)
-    .order('status',      { ascending: true })
-    .order('detected_at', { ascending: false })
-    .limit(50)
-  return data ?? []
+  const result = await adminFetch(`/venues/${venueId}/discrepancies`)
+  return result.discrepancies ?? []
 }
 
 // ---------------------------------------------------------------------------
@@ -206,23 +213,28 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
   }, [venueId])
 
   async function resolveDisc(discId, action) {
-    if (!actor) {
-      setDiscErr('Seleccioná un actor antes de resolver.')
-      return
-    }
     setDiscErr(null)
-    const { data, error: rpcErr } = await supabase.rpc('resolve_venue_discrepancy', {
-      p_discrepancy_id: discId,
-      p_action: action,
-      p_actor: actor,
+    const result = await adminFetch(`/discrepancies/${discId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
     })
-    if (rpcErr) { setDiscErr(rpcErr.message); return }
-    if (data && data.ok === false) { setDiscErr(data.error ?? 'RPC error'); return }
-    setDiscrepancies(prev => prev.map(d =>
-      d.id === discId
-        ? { ...d, status: action, resolved_at: new Date().toISOString(), resolved_by: actor }
-        : d
-    ))
+    if (!result.ok) { setDiscErr(result.error ?? 'resolve failed'); return }
+
+    if (action === 'accept_provider') {
+      // Re-fetch discrepancies and venue so the panel reflects the field change
+      const [freshDiscs, freshVenue] = await Promise.all([
+        fetchVenueDiscrepancies(venueId),
+        fetchVenueDetail(venueId),
+      ])
+      setDiscrepancies(freshDiscs)
+      setVenue(freshVenue)
+    } else {
+      setDiscrepancies(prev => prev.map(d =>
+        d.id === discId
+          ? { ...d, status: action, resolved_at: new Date().toISOString() }
+          : d
+      ))
+    }
   }
 
   if (!venueId) return (
@@ -426,11 +438,6 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
             {discErr}
           </div>
         )}
-        {!actor && discrepancies.some(d => d.status === 'open') && (
-          <div className="mb-2 px-2 py-1.5 bg-orange-50 border border-orange-200 rounded text-[10px] text-orange-700">
-            Seleccioná un actor para resolver discrepancias.
-          </div>
-        )}
         {discrepancies.length === 0 ? (
           <p className="text-gray-400">Sin discrepancias.</p>
         ) : (
@@ -439,7 +446,6 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
               <DiscrepancyInline
                 key={d.id}
                 disc={d}
-                actor={actor}
                 onResolve={resolveDisc}
               />
             ))}
@@ -468,7 +474,7 @@ function fmtDiscVal(raw) {
   return <span className="font-mono">{JSON.stringify(raw)}</span>
 }
 
-function DiscrepancyInline({ disc, actor, onResolve }) {
+function DiscrepancyInline({ disc, onResolve }) {
   const [actionLoading, setActionLoading] = useState(null)
   const [showPreview, setShowPreview]     = useState(false)
   const { label, cls } = DISC_STATUS_LABELS[disc.status] ?? { label: disc.status, cls: 'bg-gray-100 text-gray-500' }

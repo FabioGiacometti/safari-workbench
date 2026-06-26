@@ -1,29 +1,51 @@
 import { notFound, badRequest } from './errors.js'
 import * as events from './handlers/events.js'
 import * as venues from './handlers/venues.js'
+import * as discrepancies from './handlers/discrepancies.js'
 
 /**
  * Dispatches to the correct handler based on path segments and HTTP method.
  * pathSegments comes from req.query._path split on '/'.
  *
  * Routes:
- *   GET    []                        → events.list
- *   POST   []                        → events.create  (body = event fields)
- *   GET    [id]                      → events.get
- *   PATCH  [id]                      → events.update
- *   POST   [id, 'publish']           → events.publish
- *   POST   [id, 'cancel']            → events.cancel
- *   GET    [id, 'audit']             → events.audit
- *   GET    ['venues', 'search']      → venues.search
+ *   GET    []                                  → events.list
+ *   POST   []                                  → events.create  (body = event fields)
+ *   GET    [id]                                → events.get
+ *   PATCH  [id]                                → events.update
+ *   POST   [id, 'publish']                     → events.publish
+ *   POST   [id, 'cancel']                      → events.cancel
+ *   GET    [id, 'audit']                       → events.audit
+ *   GET    ['venues', 'search']                → venues.search
+ *   GET    ['venues', venueId, 'discrepancies']→ discrepancies.listForVenue
+ *   GET    ['discrepancies']                   → discrepancies.list
+ *   POST   ['discrepancies', id, 'resolve']    → discrepancies.resolve
  */
 export async function route(req, res, user, pathSegments) {
-  const [seg0, seg1, seg2] = pathSegments
+  const [seg0, seg1, seg2, seg3] = pathSegments
   const { method } = req
+
+  // /api/admin/discrepancies
+  if (seg0 === 'discrepancies' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return discrepancies.list(req, res, user)
+  }
+
+  // /api/admin/discrepancies/:id/resolve
+  if (seg0 === 'discrepancies' && seg1 && seg2 === 'resolve' && !seg3) {
+    if (method !== 'POST') return badRequest(res, 'method_not_allowed')
+    return discrepancies.resolve(req, res, user, seg1)
+  }
 
   // /api/admin/venues/search
   if (seg0 === 'venues' && seg1 === 'search' && !seg2) {
     if (method !== 'GET') return badRequest(res, 'method_not_allowed')
     return venues.search(req, res, user)
+  }
+
+  // /api/admin/venues/:venueId/discrepancies
+  if (seg0 === 'venues' && seg1 && seg2 === 'discrepancies' && !seg3) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return discrepancies.listForVenue(req, res, user, seg1)
   }
 
   // /api/admin  (event list + create)
