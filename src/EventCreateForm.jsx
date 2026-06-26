@@ -360,7 +360,7 @@ function CreateForm({ onCreated }) {
     return Object.keys(errs).length === 0
   }
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e, andPublish = false) {
     e.preventDefault()
     if (!validate()) return
     setBusy(true); setMsg(null)
@@ -383,9 +383,17 @@ function CreateForm({ onCreated }) {
     }
 
     const r = await adminFetch('/events', { method: 'POST', body: JSON.stringify(body) })
-    setBusy(false)
-    if (r.ok) { onCreated(r.event) }
-    else      { setMsg(`Error: ${r.error}`) }
+    if (!r.ok) { setBusy(false); setMsg(`Error: ${r.error}`); return }
+
+    if (andPublish) {
+      const p = await adminFetch(`/${r.event.id}/publish`, { method: 'POST' })
+      setBusy(false)
+      if (p.ok) { onCreated(p.event) }
+      else      { setMsg(`Borrador creado pero no se pudo publicar: ${p.error}`); onCreated(r.event) }
+    } else {
+      setBusy(false)
+      onCreated(r.event)
+    }
   }
 
   return (
@@ -411,22 +419,29 @@ function CreateForm({ onCreated }) {
 
       <Section title="Fecha y hora">
         <div className="grid grid-cols-3 gap-2 mb-2">
-          <Field label="Año *" error={errors.year}>
-            <input type="number" value={form.year} onChange={e => set('year', e.target.value)}
-              className={inp(errors.year)} placeholder="2026" />
+          <Field label="Día *" error={errors.day}>
+            <input type="number" value={form.day} onChange={e => set('day', e.target.value)}
+              className={inp(errors.day)} placeholder="15" />
           </Field>
           <Field label="Mes *" error={errors.month}>
             <input type="number" value={form.month} onChange={e => set('month', e.target.value)}
               className={inp(errors.month)} placeholder="7" />
           </Field>
-          <Field label="Día *" error={errors.day}>
-            <input type="number" value={form.day} onChange={e => set('day', e.target.value)}
-              className={inp(errors.day)} placeholder="15" />
+          <Field label="Año *" error={errors.year}>
+            <input type="number" value={form.year} onChange={e => set('year', e.target.value)}
+              className={inp(errors.year)} placeholder="2026" />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Hora (HH:MM)">
-            <input type="time" value={form.start_time} onChange={e => set('start_time', e.target.value)} className={inp()} />
+            <input type="time" value={form.start_time}
+              onChange={e => set('start_time', e.target.value)}
+              onBlur={e => {
+                const v = e.target.value
+                if (v && !v.includes(':')) set('start_time', v.padStart(2,'0') + ':00')
+                else if (v && v.endsWith(':')) set('start_time', v + '00')
+              }}
+              className={inp()} />
           </Field>
           <Field label="Timezone">
             <select value={form.timezone} onChange={e => set('timezone', e.target.value)} className={inp()}>
@@ -482,6 +497,10 @@ function CreateForm({ onCreated }) {
         <button type="submit" disabled={busy}
           className="px-4 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-40">
           {busy ? 'Creando…' : 'Crear borrador'}
+        </button>
+        <button type="button" disabled={busy} onClick={e => handleSubmit(e, true)}
+          className="px-4 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-40">
+          {busy ? 'Publicando…' : 'Crear y publicar'}
         </button>
       </div>
     </form>
