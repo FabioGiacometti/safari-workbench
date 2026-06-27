@@ -55,7 +55,7 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | `src/supabase.js` | Supabase client singleton (legacy tabs only — do not add new uses) |
 | `src/LoginForm.jsx` | Browser auth gate; exports `authClient` (anon key only) |
 | `src/EventCreateForm.jsx` | Manual event authoring and lifecycle — uses only `/api/admin/*`, no direct Supabase |
-| `src/VenueCandidates.jsx` | Venue deduplication workflow (approve/reject/merge candidate pairs) |
+| `src/VenueCandidates.jsx` | Venue deduplication workflow — uses only `/api/admin/*`, no direct Supabase |
 | `src/VenueCatalog.jsx` | Venue search, detail view, inline editing via `VenueEditForm` |
 | `src/VenueDiscrepancies.jsx` | Manual-vs-provider field conflict review |
 | `src/VenueEditForm.jsx` | Venue record editor; tracks `manually_edited_fields`, handles JSON/array fields |
@@ -63,6 +63,7 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | `src/api/router.js` | Server: dispatches by path segments + HTTP method |
 | `src/api/handlers/events.js` | Server: create, update, publish, cancel, audit handlers |
 | `src/api/handlers/venues.js` | Server: venue list, detail, update (PATCH via `edit_venue` RPC), search handlers |
+| `src/api/handlers/candidates.js` | Server: venue-candidates list, approve, reject, restore-pending, merge, rollback |
 | `api/admin.js` | Vercel function entry point (1 of 2 functions) |
 | `api/health.js` | GET /api/health → {ok:true} (2 of 2 functions) |
 
@@ -73,10 +74,10 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | EventCreateForm | `/api/admin/*` server backend | ✅ Migrated (Step B) |
 | Conflictos (App.jsx) | `VITE_SUPABASE_KEY` direct | ⏳ Pending (Step C) |
 | VenueCatalog + VenueEditForm | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
-| VenueCandidates | `VITE_SUPABASE_KEY` direct | ⏳ Pending |
-| VenueDiscrepancies | `VITE_SUPABASE_KEY` direct | ⏳ Pending |
+| VenueCandidates | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
+| VenueDiscrepancies | `/api/admin/*` server backend | ✅ Migrated (prior session) |
 
-`VITE_SUPABASE_KEY` (service-role) **cannot be rotated** until all pending tabs are migrated.
+`VITE_SUPABASE_KEY` (service-role) **cannot be rotated** until Conflictos (App.jsx) is migrated.
 
 ### Conflict types
 
