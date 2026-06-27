@@ -15,11 +15,14 @@ export const NON_ACTIONABLE_TYPES = new Set([
 ])
 
 // ACTIONABLE: genuine editorial ambiguity — a canonical_rule resolves it.
+// ORPHAN_CITY: city auto-matched by provider geo but no canonical rule exists yet.
+// Resolving creates a provider-scoped rule confirming the existing auto_match candidate.
 export const ACTIONABLE_TYPES = new Set([
   'UNMATCHED',
   'GEO_AMBIGUOUS',
   'VENUE_GEO_MISMATCH',
   'LOW_CONFIDENCE_GEO',
+  'ORPHAN_CITY',
 ])
 
 // DISCOVERY: geo entity does not exist yet — requires entity creation, not a rule.
@@ -62,6 +65,7 @@ const SEVERITY_WEIGHTS = {
   VENUE_GEO_MISMATCH:  1.5,
   UNMATCHED:           1.2,
   GEO_AMBIGUOUS:       1.2,
+  ORPHAN_CITY:         1.0,
   LOW_CONFIDENCE_GEO:  0.8,
   VENUE_WITHOUT_GEO:   0.5,
 }
@@ -178,6 +182,20 @@ export function conflictExplanation(cluster) {
       }
     }
 
+    case 'ORPHAN_CITY': {
+      const cand = cluster.candidate_entities?.[0]
+      return {
+        reason:  'City auto-matched by provider but not confirmed by a canonical rule',
+        detail:  'The pipeline resolved this location via provider-supplied geo data (geo_source=provider). ' +
+                 'Creating a canonical rule pins the match editorially and prevents future ambiguity if the provider data changes.',
+        signals: [
+          cand ? `suggested: ${cand.display_name} (${(cand.confidence * 100).toFixed(0)}%)` : null,
+          conf ? `confidence: ${conf}` : null,
+          `provider: ${cluster.provider}`,
+        ].filter(Boolean),
+      }
+    }
+
     case 'EXTRACTION_FAILURE':
       return {
         reason:  'Provider/normalizer sent no location data',
@@ -227,6 +245,7 @@ export function conflictBadgeStyle(type) {
     case 'UNMATCHED':              return 'bg-red-100 text-red-700 border border-red-300'
     case 'GEO_AMBIGUOUS':          return 'bg-purple-100 text-purple-700 border border-purple-300'
     case 'LOW_CONFIDENCE_GEO':     return 'bg-blue-100 text-blue-700 border border-blue-300'
+    case 'ORPHAN_CITY':             return 'bg-indigo-100 text-indigo-700 border border-indigo-300'
     case 'GEO_ENTITY_DISCOVERY':    return 'bg-teal-100 text-teal-700 border border-teal-300'
     case 'EXTRACTION_FAILURE':
     case 'PROVIDER_PARSER_FAILURE':

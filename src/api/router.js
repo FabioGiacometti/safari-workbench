@@ -3,6 +3,7 @@ import * as events from './handlers/events.js'
 import * as venues from './handlers/venues.js'
 import * as discrepancies from './handlers/discrepancies.js'
 import * as candidates from './handlers/candidates.js'
+import * as conflicts from './handlers/conflicts.js'
 
 /**
  * Dispatches to the correct handler based on path segments and HTTP method.
@@ -29,6 +30,16 @@ import * as candidates from './handlers/candidates.js'
  *   POST   ['venue-candidates', id, 'restore-pending']→ candidates.restorePending
  *   POST   ['venue-candidates', id, 'merge']          → candidates.merge
  *   POST   ['venue-candidates', id, 'rollback']       → candidates.rollback
+ *   GET    ['conflicts']                              → conflicts.list
+ *   GET    ['conflicts', id, 'events']                → conflicts.events
+ *   GET    ['conflicts', id, 'rules']                 → conflicts.rules
+ *   GET    ['geo-entities']                           → conflicts.geoEntities
+ *   POST   ['conflicts', id, 'in-review']             → conflicts.inReview
+ *   POST   ['conflicts', id, 'dismiss']               → conflicts.dismiss
+ *   POST   ['conflicts', id, 'provider-bug']          → conflicts.providerBug
+ *   POST   ['conflicts', id, 'resolve-rule']          → conflicts.resolveRule
+ *   POST   ['conflicts', id, 'resolve-venue-geo']     → conflicts.resolveVenueGeo
+ *   POST   ['conflicts', id, 'resolve-discovery']     → conflicts.resolveDiscovery
  */
 export async function route(req, res, user, pathSegments) {
   const [seg0, seg1, seg2, seg3] = pathSegments
@@ -52,6 +63,37 @@ export async function route(req, res, user, pathSegments) {
     if (seg2 === 'merge')           return candidates.merge(req, res, user, seg1)
     if (seg2 === 'rollback')        return candidates.rollback(req, res, user, seg1)
     return notFound(res)
+  }
+
+  // /api/admin/geo-entities
+  if (seg0 === 'geo-entities' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return conflicts.geoEntities(req, res, user)
+  }
+
+  // /api/admin/conflicts  (list)
+  if (seg0 === 'conflicts' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return conflicts.list(req, res, user)
+  }
+
+  // /api/admin/conflicts/:id/events|rules
+  if (seg0 === 'conflicts' && seg1 && seg2 && !seg3) {
+    if (method === 'GET') {
+      if (seg2 === 'events') return conflicts.events(req, res, user, seg1)
+      if (seg2 === 'rules')  return conflicts.rules(req, res, user, seg1)
+      return notFound(res)
+    }
+    if (method === 'POST') {
+      if (seg2 === 'in-review')          return conflicts.inReview(req, res, user, seg1)
+      if (seg2 === 'dismiss')            return conflicts.dismiss(req, res, user, seg1)
+      if (seg2 === 'provider-bug')       return conflicts.providerBug(req, res, user, seg1)
+      if (seg2 === 'resolve-rule')       return conflicts.resolveRule(req, res, user, seg1)
+      if (seg2 === 'resolve-venue-geo')  return conflicts.resolveVenueGeo(req, res, user, seg1)
+      if (seg2 === 'resolve-discovery')  return conflicts.resolveDiscovery(req, res, user, seg1)
+      return notFound(res)
+    }
+    return badRequest(res, 'method_not_allowed')
   }
 
   // /api/admin/discrepancies

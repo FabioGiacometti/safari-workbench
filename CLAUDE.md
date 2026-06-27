@@ -18,9 +18,8 @@ Requires `.env.local` (not committed):
 ```
 VITE_SUPABASE_URL=...          # Supabase project URL (safe to expose)
 VITE_SUPABASE_ANON_KEY=...     # Anon key — used only by LoginForm for auth
-VITE_SUPABASE_KEY=...          # ⚠ service-role key — exposed in browser bundle
-                               #   required by legacy tabs until Steps C–E complete
-                               #   DO NOT add new uses; will be rotated after full migration
+# VITE_SUPABASE_KEY has been removed — all tabs migrated to /api/admin/*
+#   Rotate the service-role key in Supabase dashboard (it was exposed in bundle until 2026-06-27)
 # VITE_API_BASE_URL is retired — EventCreateForm now calls /api/admin/* directly
 ```
 
@@ -52,7 +51,6 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 |---|---|
 | `src/App.jsx` | Shell: tab bar, conflict queue (left panel), conflict detail (right panel), keyboard nav |
 | `src/conflict-meta.js` | Business logic: conflict type classification, priority scoring, badge styles, help text |
-| `src/supabase.js` | Supabase client singleton (legacy tabs only — do not add new uses) |
 | `src/LoginForm.jsx` | Browser auth gate; exports `authClient` (anon key only) |
 | `src/EventCreateForm.jsx` | Manual event authoring and lifecycle — uses only `/api/admin/*`, no direct Supabase |
 | `src/VenueCandidates.jsx` | Venue deduplication workflow — uses only `/api/admin/*`, no direct Supabase |
@@ -64,6 +62,7 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | `src/api/handlers/events.js` | Server: create, update, publish, cancel, audit handlers |
 | `src/api/handlers/venues.js` | Server: venue list, detail, update (PATCH via `edit_venue` RPC), search handlers |
 | `src/api/handlers/candidates.js` | Server: venue-candidates list, approve, reject, restore-pending, merge, rollback |
+| `src/api/handlers/conflicts.js` | Server: conflict queue reads + 6 resolution actions |
 | `api/admin.js` | Vercel function entry point (1 of 2 functions) |
 | `api/health.js` | GET /api/health → {ok:true} (2 of 2 functions) |
 
@@ -72,25 +71,44 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | Tab | Write path | Status |
 |---|---|---|
 | EventCreateForm | `/api/admin/*` server backend | ✅ Migrated (Step B) |
-| Conflictos (App.jsx) | `VITE_SUPABASE_KEY` direct | ⏳ Pending (Step C) |
+| Conflictos (App.jsx) | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) — Step C complete |
 | VenueCatalog + VenueEditForm | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
 | VenueCandidates | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
 | VenueDiscrepancies | `/api/admin/*` server backend | ✅ Migrated (prior session) |
 
-`VITE_SUPABASE_KEY` (service-role) **cannot be rotated** until Conflictos (App.jsx) is migrated.
+**All tabs migrated.** `VITE_SUPABASE_KEY` removed from bundle. Rotate the service-role key in Supabase dashboard.
 
 ### Conflict types
 
 Defined in `conflict-meta.js` and central to the app's purpose:
 
-- **Actionable** (require editorial decision): `UNMATCHED`, `GEO_AMBIGUOUS`, `VENUE_GEO_MISMATCH`, `LOW_CONFIDENCE_GEO`
+- **Actionable** (require editorial decision): `UNMATCHED`, `GEO_AMBIGUOUS`, `VENUE_GEO_MISMATCH`, `LOW_CONFIDENCE_GEO`, `ORPHAN_CITY`
 - **Non-actionable** (pipeline bugs/noise): `EXTRACTION_FAILURE`, `PROVIDER_PARSER_FAILURE`, `NO_LOCATION_SIGNAL`, `PROVIDER_NOISE`
 - **Discovery**: `GEO_ENTITY_DISCOVERY` (propose new geo entities)
 - **Informational**: `VENUE_WITHOUT_GEO`
 
+`ORPHAN_CITY`: city auto-matched by provider geo but not yet confirmed by a canonical rule. Resolution creates a provider-scoped `GEO_OVERRIDE` rule confirming the existing candidate.
+
+### Conflict Queue API routes
+
+All require Bearer token (operator auth). Actor always derived from `user.email` server-side.
+
+```
+GET  /api/admin/conflicts                         → active conflict list
+GET  /api/admin/conflicts/:id/events              → sample events
+GET  /api/admin/conflicts/:id/rules               → canonical rule history
+GET  /api/admin/geo-entities                      → geo entity picker
+POST /api/admin/conflicts/:id/in-review           → mark in review
+POST /api/admin/conflicts/:id/dismiss             → dismiss conflict
+POST /api/admin/conflicts/:id/provider-bug        → mark provider bug
+POST /api/admin/conflicts/:id/resolve-rule        → create rule + resolve (UNMATCHED/GEO_AMBIGUOUS/VENUE_GEO_MISMATCH/LOW_CONFIDENCE_GEO/ORPHAN_CITY)
+POST /api/admin/conflicts/:id/resolve-venue-geo   → attach geo entity to venue (VENUE_WITHOUT_GEO)
+POST /api/admin/conflicts/:id/resolve-discovery   → approve/reject discovery candidate (GEO_ENTITY_DISCOVERY)
+```
+
 ### Main database tables
 
-- `resolution_conflicts` — conflict queue (statuses: `open`, `in_review`, `resolved`, `dismissed`, `provider_bug`, `resolution_failed`)
+- `resolution_conflicts` — conflict queue (statuses: `open`, `in_review`, `resolved`, `dismissed`, `provider_bug`, `resolution_failed`, `auto_resolved`)
 - `canonical_rules` — location string → geo entity mappings
 - `geo_entities` — cities/regions
 - `venues` — venue master records
@@ -98,3 +116,4 @@ Defined in `conflict-meta.js` and central to the app's purpose:
 - `venue_discrepancies` — manual vs. provider field mismatches
 - `editorial_actions` — audit log of all ops actions
 - `venues_catalog` (view) — denormalized venues with event counts
+- `geo_entity_candidates` — proposed new geo entities from pipeline discovery

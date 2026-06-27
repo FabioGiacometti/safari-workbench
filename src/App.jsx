@@ -1,8 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-// ⚠ SECURITY EXPOSURE: VITE_SUPABASE_KEY is a service-role key bundled into the
-// browser bundle. This is an unresolved security issue. It will be removed once
-// all tabs are migrated to the server-side API (Steps C–E). Do not add new uses.
-import { supabase } from './supabase.js'
+import { authClient } from './LoginForm.jsx'
 import VenueCandidates from './VenueCandidates.jsx'
 import VenueCatalog from './VenueCatalog.jsx'
 import VenueDiscrepancies from './VenueDiscrepancies.jsx'
@@ -19,6 +16,36 @@ import {
 } from './conflict-meta.js'
 
 // ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+
+async function getToken() {
+  const { data: { session } } = await authClient.auth.getSession()
+  return session?.access_token ?? null
+}
+
+async function apiFetch(path, method = 'GET', body = undefined) {
+  const token = await getToken()
+  const opts = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  }
+  const res = await fetch(`/api/admin/${path}`, opts)
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(json.error ?? `HTTP ${res.status}`)
+    err.status = res.status
+    err.code   = json.error
+    throw err
+  }
+  return json
+}
+
+// ---------------------------------------------------------------------------
 // Module-level helpers
 // ---------------------------------------------------------------------------
 
@@ -31,32 +58,6 @@ function statusDotStyle(status, actionability) {
   if (actionability === 'informational')       return 'bg-gray-300'
   if (actionability === 'discovery')           return 'bg-teal-400'
   return 'bg-yellow-400'
-}
-
-async function writeEditorialAction(supabaseClient, conflictId, actionType, metadata = {}) {
-  try {
-    await supabaseClient.from('editorial_actions').insert({
-      conflict_id: conflictId,
-      action_type: actionType,
-      entity_type: 'conflict',
-      entity_id:   String(conflictId),
-      metadata,
-    })
-  } catch (_) {
-    // Non-fatal — audit trail failure must not block the primary action.
-  }
-}
-
-async function fetchConflicts() {
-  const { data, error } = await supabase
-    .from('resolution_conflicts')
-    .select('*')
-    .in('status', ['open', 'in_review', 'resolution_failed'])
-    .order('affected_count', { ascending: false })
-  if (error) throw new Error(error.message)
-  const rows = data ?? []
-  // Client-side sort by editorial priority (ACTIONABLE first, then score desc, NON_ACTIONABLE last)
-  return [...rows].sort((a, b) => editorialPriorityScore(b) - editorialPriorityScore(a))
 }
 
 // ---------------------------------------------------------------------------
@@ -229,183 +230,117 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
   const isGeoDiscovery    = cluster.conflict_type === 'GEO_ENTITY_DISCOVERY'
   const venueCandidate    = isVenueWithoutGeo ? (candidates[0] ?? null) : null
 
+  // For ORPHAN_CITY: pre-select the existing candidate to guide the operator
+  useEffect(() => {
+    if (cluster.conflict_type === 'ORPHAN_CITY' && candidates.length === 1 && !selectedEntityId) {
+      setSelectedEntityId(candidates[0].id)
+    }
+  }, [cluster.id, cluster.conflict_type, candidates, selectedEntityId])
+
   async function handleCreateRule() {
     if (!selectedEntityId || !canCreateRule) return
-
-    const matchProvider = scopeGlobal ? '' : cluster.provider
-
-    const { data: existing } = await supabase
-      .from('canonical_rules')
-      .select('id, match_provider, geo_entity_id')
-      .eq('match_raw_location', cluster.raw_value)
-      .eq('match_provider', matchProvider)
-      .maybeSingle()
-
-    if (existing) {
-      const scopeLabel = matchProvider === '' ? 'global' : `provider=${matchProvider}`
-      const ok = window.confirm(
-        `Rule already exists for "${cluster.raw_value}" (${scopeLabel}) → ${existing.geo_entity_id}.\n\nOverwrite with → ${selectedEntityId}?`
-      )
-      if (!ok) return
-    }
-
+    const providerScope = scopeGlobal ? '' : cluster.provider
     setOpStatus('loading')
-
-    const { error: ruleErr } = await supabase
-      .from('canonical_rules')
-      .upsert({
-        match_raw_location: cluster.raw_value,
-        match_provider:     matchProvider,
-        geo_entity_id:      selectedEntityId,
-        type:               'GEO_OVERRIDE',
-        scope:              'match_pattern',
-        confidence:         1.0,
-        source:             'workbench',
-        resolution_mode:    'manual_override',
-        created_by:         'operator',
-        updated_at:         new Date().toISOString(),
-      }, { onConflict: 'match_raw_location,match_provider' })
-
-    if (ruleErr) { setOpStatus('error'); setOpMsg(ruleErr.message); return }
-
-    const { error: conflictErr } = await supabase
-      .from('resolution_conflicts')
-      .update({
-        status:                 'resolved',
-        resolved_geo_entity_id: selectedEntityId,
-        resolved_at:            new Date().toISOString(),
-        resolved_by:            'operator',
-        editorial_updated_at:   new Date().toISOString(),
+    try {
+      await apiFetch(`conflicts/${cluster.id}/resolve-rule`, 'POST', {
+        geo_entity_id:  selectedEntityId,
+        provider_scope: providerScope,
       })
-      .eq('id', cluster.id)
-
-    if (conflictErr) {
+      setOpStatus('done')
+      setOpMsg('rule created — re-run pipeline to confirm auto_resolved')
+      onRefreshRuleHistory()
+      setTimeout(() => onAction('refresh'), 1500)
+    } catch (err) {
       setOpStatus('error')
-      setOpMsg(`rule created but status update failed: ${conflictErr.message}`)
-      return
+      setOpMsg(err.code === 'wrong_conflict_type' ? 'this conflict type does not support rule creation'
+             : err.code === 'no_rule_possible'    ? 'conflict has no raw_value'
+             : err.code === 'not_found'           ? 'conflict or geo entity not found'
+             : err.message)
     }
-
-    setOpStatus('done')
-    setOpMsg('rule created — re-run pipeline to confirm auto_resolved')
-    await writeEditorialAction(supabase, cluster.id, 'create_rule', {
-      geo_entity_id: selectedEntityId, scope: scopeGlobal ? 'global' : cluster.provider,
-    })
-    onRefreshRuleHistory()
-    setTimeout(() => onAction('refresh'), 1500)
   }
 
   async function handleVenueGeoFix() {
     if (!selectedEntityId || !venueCandidate) return
     setOpStatus('loading')
-
-    const { error: venueErr } = await supabase
-      .from('venues')
-      .update({ geo_entity_id: selectedEntityId })
-      .eq('fingerprint', venueCandidate.id)
-
-    if (venueErr) { setOpStatus('error'); setOpMsg(venueErr.message); return }
-
-    const { error: conflictErr } = await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'resolved', resolved_geo_entity_id: selectedEntityId,
-                resolved_at: new Date().toISOString(), resolved_by: 'operator',
-                editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-
-    if (conflictErr) { setOpStatus('error'); setOpMsg(conflictErr.message); return }
-
-    await writeEditorialAction(supabase, cluster.id, 'venue_geo_fix', {
-      venue_fingerprint: venueCandidate.id, geo_entity_id: selectedEntityId,
-    })
-    setOpStatus('done')
-    setOpMsg('venue geo entity attached — re-warm pipeline to activate')
-    setTimeout(() => onAction('refresh'), 1500)
+    try {
+      await apiFetch(`conflicts/${cluster.id}/resolve-venue-geo`, 'POST', {
+        geo_entity_id: selectedEntityId,
+      })
+      setOpStatus('done')
+      setOpMsg('venue geo entity attached — re-warm pipeline to activate')
+      setTimeout(() => onAction('refresh'), 1500)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'venue_not_found' ? 'venue could not be identified from conflict data'
+             : err.code === 'not_found'       ? 'conflict or geo entity not found'
+             : err.message)
+    }
   }
 
   async function handleDiscoveryApprove() {
     setOpStatus('loading')
-    const { error } = await supabase
-      .from('geo_entity_candidates')
-      .update({ status: 'approved' })
-      .eq('normalized_name', (cluster.discovery_hints?.city_name ?? cluster.raw_value ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim())
-      .eq('status', 'pending')
-
-    if (error) { setOpStatus('error'); setOpMsg(error.message); return }
-
-    await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'in_review', editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-
-    await writeEditorialAction(supabase, cluster.id, 'discovery_approved', {
-      city_name: cluster.discovery_hints?.city_name, country_code: cluster.discovery_hints?.country_code,
-    })
-    setOpStatus('done')
-    setOpMsg('candidate approved — create the geo entity in the registry to complete resolution')
+    try {
+      await apiFetch(`conflicts/${cluster.id}/resolve-discovery`, 'POST', { action: 'approve' })
+      setOpStatus('done')
+      setOpMsg('candidate approved — create the geo entity in the registry to complete resolution')
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'no_discovery_candidate' ? 'no pending discovery candidate found'
+             : err.message)
+    }
   }
 
   async function handleDiscoveryReject() {
     setOpStatus('loading')
-    const { error: candidateErr } = await supabase
-      .from('geo_entity_candidates')
-      .update({ status: 'rejected' })
-      .eq('normalized_name', (cluster.discovery_hints?.city_name ?? cluster.raw_value ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim())
-      .eq('status', 'pending')
-
-    if (candidateErr) { setOpStatus('error'); setOpMsg(candidateErr.message); return }
-
-    const { error } = await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'dismissed', editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-
-    if (error) { setOpStatus('error'); setOpMsg(error.message); return }
-
-    await writeEditorialAction(supabase, cluster.id, 'discovery_rejected', {
-      city_name: cluster.discovery_hints?.city_name,
-    })
-    setOpStatus('done')
-    setOpMsg('candidate rejected and conflict dismissed')
-    setTimeout(() => onAction('refresh'), 1000)
+    try {
+      await apiFetch(`conflicts/${cluster.id}/resolve-discovery`, 'POST', { action: 'reject' })
+      setOpStatus('done')
+      setOpMsg('candidate rejected and conflict dismissed')
+      setTimeout(() => onAction('refresh'), 1000)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'no_discovery_candidate' ? 'no pending discovery candidate found'
+             : err.message)
+    }
   }
 
   async function handleInReview() {
     setOpStatus('loading')
-    const { error } = await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'in_review', editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-    if (error) { setOpStatus('error'); setOpMsg(error.message); return }
-    await writeEditorialAction(supabase, cluster.id, 'in_review', {})
-    setOpStatus('done')
-    setOpMsg('marked in review')
-    setTimeout(() => onAction('refresh'), 1000)
+    try {
+      await apiFetch(`conflicts/${cluster.id}/in-review`, 'POST')
+      setOpStatus('done')
+      setOpMsg('marked in review')
+      setTimeout(() => onAction('refresh'), 1000)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'invalid_transition' ? 'conflict is already in review' : err.message)
+    }
   }
 
   async function handleProviderBug() {
     setOpStatus('loading')
-    const { error } = await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'provider_bug', editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-    if (error) { setOpStatus('error'); setOpMsg(error.message); return }
-    await writeEditorialAction(supabase, cluster.id, 'provider_bug', {})
-    setOpStatus('done')
-    setOpMsg('marked provider bug')
-    setTimeout(() => onAction('refresh'), 1000)
+    try {
+      await apiFetch(`conflicts/${cluster.id}/provider-bug`, 'POST')
+      setOpStatus('done')
+      setOpMsg('marked provider bug')
+      setTimeout(() => onAction('refresh'), 1000)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.message)
+    }
   }
 
   async function handleDismiss() {
     setOpStatus('loading')
-    const { error } = await supabase
-      .from('resolution_conflicts')
-      .update({ status: 'dismissed', editorial_updated_at: new Date().toISOString() })
-      .eq('id', cluster.id)
-    if (error) { setOpStatus('error'); setOpMsg(error.message); return }
-    await writeEditorialAction(supabase, cluster.id, 'dismiss', {})
-    setOpStatus('done')
-    setOpMsg('dismissed')
-    setTimeout(() => onAction('refresh'), 1000)
+    try {
+      await apiFetch(`conflicts/${cluster.id}/dismiss`, 'POST')
+      setOpStatus('done')
+      setOpMsg('dismissed')
+      setTimeout(() => onAction('refresh'), 1000)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.message)
+    }
   }
 
   return (
@@ -462,7 +397,7 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
       {/* Why — always shown */}
       <WhySection cluster={cluster} />
 
-      {/* Non-actionable notice — shown before candidates/actions to communicate constraint early */}
+      {/* Non-actionable notice */}
       {isNonActionable(cluster.conflict_type) && (
         <NonActionableNotice conflictType={cluster.conflict_type} />
       )}
@@ -744,15 +679,13 @@ export default function App({ session, onSignOut }) {
 
   useEffect(() => {
     Promise.all([
-      fetchConflicts(),
-      supabase
-        .from('geo_entities')
-        .select('id, display_name, level, country_code')
-        .eq('status', 'active')
-        .order('display_name'),
-    ]).then(([conflictsData, entitiesRes]) => {
-      if (entitiesRes.data) setGeoEntities(entitiesRes.data)
-      setConflicts(conflictsData)
+      apiFetch('conflicts'),
+      apiFetch('geo-entities'),
+    ]).then(([conflictsRes, entitiesRes]) => {
+      const rows = conflictsRes.rows ?? []
+      const sorted = [...rows].sort((a, b) => editorialPriorityScore(b) - editorialPriorityScore(a))
+      setConflicts(sorted)
+      setGeoEntities(entitiesRes.entities ?? [])
       setLoading(false)
     }).catch(err => {
       setError(err.message)
@@ -761,42 +694,45 @@ export default function App({ session, onSignOut }) {
   }, [])
 
   useEffect(() => {
-    if (!selected?.sample_event_ids?.length) { setSampleEvents([]); return }
+    if (!selected?.id) { setSampleEvents([]); return }
     setEventsLoading(true)
-    supabase
-      .from('events')
-      .select('title, venue_name, city, geo_confidence, geo_source')
-      .in('id', selected.sample_event_ids)
-      .then(({ data }) => {
-        setSampleEvents(data ?? [])
+    apiFetch(`conflicts/${selected.id}/events`)
+      .then(res => {
+        setSampleEvents(res.events ?? [])
+        setEventsLoading(false)
+      })
+      .catch(() => {
+        setSampleEvents([])
         setEventsLoading(false)
       })
   }, [selected?.id])
 
-  const loadRuleHistory = useCallback(async (rawValue) => {
-    if (rawValue === undefined || rawValue === null) { setRuleHistory([]); return }
+  const loadRuleHistory = useCallback(async (conflictId) => {
+    if (conflictId === undefined || conflictId === null) { setRuleHistory([]); return }
     setRuleHistoryLoading(true)
-    const { data } = await supabase
-      .from('canonical_rules')
-      .select('id, match_provider, geo_entity_id, type, scope, source, notes, created_at')
-      .eq('match_raw_location', rawValue)
-      .order('created_at', { ascending: false })
-    setRuleHistory(data ?? [])
+    try {
+      const res = await apiFetch(`conflicts/${conflictId}/rules`)
+      setRuleHistory(res.rules ?? [])
+    } catch {
+      setRuleHistory([])
+    }
     setRuleHistoryLoading(false)
   }, [])
 
   useEffect(() => {
-    if (selected) loadRuleHistory(selected.raw_value)
+    if (selected) loadRuleHistory(selected.id)
     else setRuleHistory([])
   }, [selected?.id, loadRuleHistory])
 
   const refreshClusters = useCallback(async () => {
     setRefreshing(true)
     try {
-      const fresh = await fetchConflicts()
-      setConflicts(fresh)
+      const res = await apiFetch('conflicts')
+      const rows = res.rows ?? []
+      const sorted = [...rows].sort((a, b) => editorialPriorityScore(b) - editorialPriorityScore(a))
+      setConflicts(sorted)
       if (selected) {
-        const still = fresh.find(c => c.id === selected.id)
+        const still = sorted.find(c => c.id === selected.id)
         if (!still) setSelected(null)
       }
     } catch (err) {
@@ -943,7 +879,7 @@ export default function App({ session, onSignOut }) {
               ruleHistory={ruleHistory}
               ruleHistoryLoading={ruleHistoryLoading}
               onAction={handleAction}
-              onRefreshRuleHistory={() => loadRuleHistory(selected.raw_value)}
+              onRefreshRuleHistory={() => loadRuleHistory(selected.id)}
             />
           : (
             <div className="h-full flex items-center justify-center text-gray-400 text-sm">
