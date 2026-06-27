@@ -62,7 +62,7 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | `src/api/auth.js` | Server: `requireOperator()` — validates Bearer token, checks OPERATOR_EMAILS |
 | `src/api/router.js` | Server: dispatches by path segments + HTTP method |
 | `src/api/handlers/events.js` | Server: create, update, publish, cancel, audit handlers |
-| `src/api/handlers/venues.js` | Server: venue search handler |
+| `src/api/handlers/venues.js` | Server: venue list, detail, update (PATCH via `edit_venue` RPC), search handlers |
 | `api/admin.js` | Vercel function entry point (1 of 2 functions) |
 | `api/health.js` | GET /api/health → {ok:true} (2 of 2 functions) |
 
@@ -72,7 +72,7 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 |---|---|---|
 | EventCreateForm | `/api/admin/*` server backend | ✅ Migrated (Step B) |
 | Conflictos (App.jsx) | `VITE_SUPABASE_KEY` direct | ⏳ Pending (Step C) |
-| VenueCatalog | `VITE_SUPABASE_KEY` direct | ⏳ Pending |
+| VenueCatalog + VenueEditForm | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
 | VenueCandidates | `VITE_SUPABASE_KEY` direct | ⏳ Pending |
 | VenueDiscrepancies | `VITE_SUPABASE_KEY` direct | ⏳ Pending |
 
