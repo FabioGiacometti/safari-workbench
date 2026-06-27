@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase } from './supabase.js'
 import VenueEditForm from './VenueEditForm.jsx'
 import { authClient } from './LoginForm.jsx'
 
@@ -15,101 +14,38 @@ async function adminFetch(path, options = {}) {
   return { status: res.status, ...json }
 }
 
-const ACTORS = ['fabio', 'admin']
-
 const PAGE_SIZE = 100
 
 // ---------------------------------------------------------------------------
-// Data fetching — single query via venues_catalog view, no N+1
+// Data fetching — serverized via /api/admin/venues*
 // ---------------------------------------------------------------------------
 
 async function fetchVenues({ search, city, statusFilter, noCity, driftOnly, order, offset }) {
-  let q = supabase
-    .from('venues_catalog')
-    .select('*', { count: 'exact' })
-    .range(offset, offset + PAGE_SIZE - 1)
+  const params = new URLSearchParams()
+  if (search)  params.set('search', search)
+  if (city)    params.set('city', city)
+  if (noCity)  params.set('no_city', 'true')
+  if (statusFilter) params.set('status', statusFilter)
+  if (order)   params.set('order', order)
+  params.set('limit', String(PAGE_SIZE))
+  params.set('offset', String(offset))
 
-  if (search)      q = q.ilike('canonical_name', `%${search}%`)
-  if (city)        q = q.ilike('city', `%${city}%`)
-  if (noCity)      q = q.is('city', null)
-  if (statusFilter === 'active')  q = q.is('merged_into', null)
-  if (statusFilter === 'merged')  q = q.not('merged_into', 'is', null)
+  const result = await adminFetch(`/venues?${params.toString()}`)
+  if (!result.ok) throw new Error(result.error ?? 'load failed')
 
-  if (order === 'name')   q = q.order('canonical_name', { ascending: true })
-  if (order === 'events') q = q.order('real_event_count', { ascending: false })
-  if (order === 'city')   q = q.order('city', { ascending: true, nullsFirst: false })
-
-  const { data, error, count } = await q
-  if (error) throw new Error(error.message)
-
-  let rows = data ?? []
+  let rows = result.venues ?? []
 
   // drift filter is client-side (no SQL column for it in the view filter)
   if (driftOnly) rows = rows.filter(r => Number(r.real_event_count) !== Number(r.stored_event_count))
 
-  return { rows, total: count ?? 0 }
+  return { rows, total: result.total ?? 0 }
 }
 
-async function fetchVenueDetail(id) {
-  const { data, error } = await supabase
-    .from('venues_catalog')
-    .select('*')
-    .eq('id', id)
-    .single()
-  if (error) throw new Error(error.message)
-  return data
-}
-
-async function fetchVenueEvents(venueId) {
-  const { data, error } = await supabase
-    .from('events')
-    .select('id, title, venue_name, city, year, month, day, provider, venue_fingerprint')
-    .eq('venue_id', venueId)
-    .order('year', { ascending: false })
-    .order('month', { ascending: false })
-    .order('day', { ascending: false })
-    .limit(20)
-  if (error) throw new Error(error.message)
-  return data ?? []
-}
-
-async function fetchVenueMergeHistory(venueId) {
-  const { data } = await supabase
-    .from('venue_merge_event_log')
-    .select('id, candidate_id, event_id, old_venue_id, new_venue_id, old_fingerprint, new_fingerprint, merged_at')
-    .or(`old_venue_id.eq.${venueId},new_venue_id.eq.${venueId}`)
-    .order('merged_at', { ascending: false })
-    .limit(20)
-  return data ?? []
-}
-
-async function fetchVenueMutations(venueId) {
-  const { data } = await supabase
-    .from('venue_mutations')
-    .select('id, mutation_type, provider, occurred_at, old_value, new_value')
-    .eq('venue_id', venueId)
-    .order('occurred_at', { ascending: false })
-    .limit(10)
-  return data ?? []
-}
-
-async function fetchVenueRules(venueId, canonicalName) {
-  const { data } = await supabase
-    .from('canonical_rules')
-    .select('id, match_raw_location, match_provider, type, scope, source, confidence, notes, created_by, created_at')
-    .or(`venue_id.eq.${venueId},match_raw_location.eq.${canonicalName}`)
-    .order('created_at', { ascending: false })
-    .limit(10)
-  return data ?? []
-}
-
-async function fetchVenueByIdMinimal(id) {
-  const { data } = await supabase
-    .from('venues')
-    .select('id, canonical_name, city, fingerprint')
-    .eq('id', id)
-    .single()
-  return data
+// Single call returns venue + all sub-resource sections.
+async function fetchVenueFull(id) {
+  const result = await adminFetch(`/venues/${id}`)
+  if (!result.ok) throw new Error(result.error ?? 'load failed')
+  return result
 }
 
 async function fetchVenueDiscrepancies(venueId) {
@@ -171,7 +107,7 @@ function Pill({ children, color = 'gray' }) {
 // VenueDetail — panel derecho
 // ---------------------------------------------------------------------------
 
-function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
+function VenueDetail({ venueId, onNavigateTo, onEditRequest }) {
   const [venue, setVenue]               = useState(null)
   const [events, setEvents]             = useState([])
   const [mergeLog, setMergeLog]         = useState([])
@@ -180,6 +116,7 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
   const [discrepancies, setDiscrepancies] = useState([])
   const [discSupportedFields, setDiscSupportedFields] = useState(null)
   const [mergedIntoVenue, setMergedIntoVenue] = useState(null)
+  const [sectionErrors, setSectionErrors] = useState(null)
   const [loading, setLoading]           = useState(true)
   const [error, setError]               = useState(null)
   const [discErr, setDiscErr]           = useState(null)
@@ -190,28 +127,23 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
     setError(null)
     setDiscErr(null)
     setMergedIntoVenue(null)
+    setSectionErrors(null)
 
-    fetchVenueDetail(venueId)
-      .then(async v => {
-        setVenue(v)
-        const [evts, log, muts, rls, discResult] = await Promise.all([
-          fetchVenueEvents(venueId),
-          fetchVenueMergeHistory(venueId),
-          fetchVenueMutations(venueId),
-          fetchVenueRules(venueId, v.canonical_name),
-          fetchVenueDiscrepancies(venueId),
-        ])
-        setEvents(evts)
-        setMergeLog(log)
-        setMutations(muts)
-        setRules(rls)
+    // ONE call to the detail endpoint (venue + all sections) + ONE to discrepancies.
+    Promise.all([
+      fetchVenueFull(venueId),
+      fetchVenueDiscrepancies(venueId),
+    ])
+      .then(([detail, discResult]) => {
+        setVenue(detail.venue)
+        setEvents(detail.events ?? [])
+        setMergeLog(detail.merge_history ?? [])
+        setMutations(detail.mutations ?? [])
+        setRules(detail.rules ?? [])
+        setMergedIntoVenue(detail.merged_into_venue ?? null)
+        setSectionErrors(detail.partial ? (detail.section_errors ?? {}) : null)
         setDiscrepancies(discResult.discrepancies)
         setDiscSupportedFields(discResult.supportedFields)
-
-        if (v.merged_into) {
-          const target = await fetchVenueByIdMinimal(v.merged_into)
-          setMergedIntoVenue(target)
-        }
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
@@ -227,13 +159,13 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
 
     if (action === 'accept_provider') {
       // Re-fetch discrepancies and venue so the panel reflects the field change
-      const [discResult, freshVenue] = await Promise.all([
+      const [discResult, freshDetail] = await Promise.all([
         fetchVenueDiscrepancies(venueId),
-        fetchVenueDetail(venueId),
+        fetchVenueFull(venueId),
       ])
       setDiscrepancies(discResult.discrepancies)
       setDiscSupportedFields(discResult.supportedFields)
-      setVenue(freshVenue)
+      setVenue(freshDetail.venue)
     } else {
       setDiscrepancies(prev => prev.map(d =>
         d.id === discId
@@ -263,6 +195,13 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest, actor }) {
 
   return (
     <div className="p-5 max-w-2xl text-xs overflow-y-auto h-full">
+
+      {/* Partial-load warning — some sub-sections failed to load (non-fatal) */}
+      {sectionErrors && Object.keys(sectionErrors).length > 0 && (
+        <div className="mb-4 px-3 py-2 rounded border border-yellow-200 bg-yellow-50 text-[10px] text-yellow-700">
+          Algunas secciones no cargaron: {Object.keys(sectionErrors).join(', ')}. El resto del detalle es válido.
+        </div>
+      )}
 
       {/* Merged banner */}
       {venue.merged_into && (
@@ -621,7 +560,7 @@ function Field({ label, value, mono, highlight }) {
 // EditPanel — fetches full venue then renders VenueEditForm
 // ---------------------------------------------------------------------------
 
-function EditPanel({ venueId, actor, onSaved, onCancel }) {
+function EditPanel({ venueId, onSaved, onCancel }) {
   const [venue, setVenue]   = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]   = useState(null)
@@ -629,8 +568,8 @@ function EditPanel({ venueId, actor, onSaved, onCancel }) {
   useEffect(() => {
     if (!venueId) return
     setLoading(true)
-    fetchVenueDetail(venueId)
-      .then(v => { setVenue(v); setLoading(false) })
+    fetchVenueFull(venueId)
+      .then(detail => { setVenue(detail.venue); setLoading(false) })
       .catch(e => { setError(e.message); setLoading(false) })
   }, [venueId])
 
@@ -645,7 +584,6 @@ function EditPanel({ venueId, actor, onSaved, onCancel }) {
   return (
     <VenueEditForm
       venue={venue}
-      actor={actor}
       onSaved={onSaved}
       onCancel={onCancel}
     />
@@ -721,13 +659,6 @@ export default function VenueCatalog() {
   const [editMode, setEditMode]     = useState(false)
   const [saveResult, setSaveResult] = useState(null)
 
-  // Actor (shared with VenueCandidates via localStorage)
-  const [actor, setActor] = useState(() => localStorage.getItem('workbench:actor') || '')
-  function handleActorChange(a) {
-    setActor(a)
-    localStorage.setItem('workbench:actor', a)
-  }
-
   // Debounce search
   const searchTimer = useRef(null)
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -783,11 +714,12 @@ export default function VenueCatalog() {
   function handleSaved(result) {
     setSaveResult(result)
     setEditMode(false)
-    // Reload list row + detail by toggling selectedId
+    // The PATCH response carries the fresh venue; remount the detail panel so it
+    // re-fetches authoritative state (incl. sub-sections), then refresh the list
+    // to reflect canonical_name/city changes.
     const id = selectedId
     setSelectedId(null)
     setTimeout(() => setSelectedId(id), 50)
-    // Also refresh list to reflect canonical_name/city changes
     load()
   }
 
@@ -886,7 +818,7 @@ export default function VenueCatalog() {
             </button>
           </div>
 
-          {/* Sort + Actor */}
+          {/* Sort */}
           <div className="flex gap-1 items-center flex-wrap">
             <span className="text-[10px] text-gray-400">Orden:</span>
             {[['events', 'eventos ↓'], ['name', 'nombre A-Z'], ['city', 'ciudad']].map(([val, label]) => (
@@ -903,17 +835,6 @@ export default function VenueCatalog() {
                 {label}
               </button>
             ))}
-            <div className="ml-auto flex items-center gap-1">
-              <span className="text-[10px] text-gray-400">Actor:</span>
-              <select
-                value={actor}
-                onChange={e => handleActorChange(e.target.value)}
-                className="text-[10px] border border-gray-300 rounded px-1 py-0.5 bg-white"
-              >
-                <option value="">—</option>
-                {ACTORS.map(a => <option key={a} value={a}>{a}</option>)}
-              </select>
-            </div>
           </div>
         </div>
 
@@ -975,7 +896,6 @@ export default function VenueCatalog() {
         {editMode && selectedId ? (
           <EditPanel
             venueId={selectedId}
-            actor={actor}
             onSaved={handleSaved}
             onCancel={() => { setEditMode(false); setSaveResult(null) }}
           />
@@ -991,7 +911,6 @@ export default function VenueCatalog() {
                 venueId={selectedId}
                 onNavigateTo={(id) => handleSelectVenue(id)}
                 onEditRequest={() => { setSaveResult(null); setEditMode(true) }}
-                actor={actor}
               />
             </div>
           </>

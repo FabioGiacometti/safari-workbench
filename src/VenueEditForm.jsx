@@ -1,5 +1,17 @@
 import { useState, useEffect } from 'react'
-import { supabase } from './supabase.js'
+import { authClient } from './LoginForm.jsx'
+
+async function adminFetch(path, options = {}) {
+  const { data: { session } } = await authClient.auth.getSession()
+  const token = session?.access_token
+  if (!token) throw new Error('No session — please sign in again')
+  const res = await fetch(`/api/admin${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers ?? {}) },
+  })
+  const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+  return { status: res.status, ...json }
+}
 
 // Fields the pipeline may write — these get added to manually_edited_fields when edited.
 const PIPELINE_WRITABLE = new Set([
@@ -132,75 +144,31 @@ function validateField(field, value) {
 // saveVenueEdits — persists diff + logs
 // ---------------------------------------------------------------------------
 
-export async function saveVenueEdits(venue, formValues, actor) {
-  const diff = [] // [{ field, oldVal, newVal }]
-
+export async function saveVenueEdits(venue, formValues) {
+  // Build the fields diff (only changed values). The server-side edit_venue RPC
+  // performs the authoritative validation, normalization, audit log, and
+  // manually_edited_fields bookkeeping atomically.
+  const fields = {}
   for (const field of ALL_EDITABLE) {
-    const incoming = parseFieldValue(
-      field,
-      field === 'aliases' ? formValues[field] : formValues[field]
-    )
+    const incoming = parseFieldValue(field, formValues[field])
     const existing = venue[field] ?? null
-
     let normalizedIncoming = incoming
     if (field === 'aliases') {
       normalizedIncoming = normalizeAliases(incoming, venue.canonical_name)
     }
-
     if (!valuesEqual(field, existing, normalizedIncoming)) {
-      diff.push({ field, oldVal: existing, newVal: normalizedIncoming })
+      fields[field] = normalizedIncoming
     }
   }
 
-  if (diff.length === 0) return { ok: true, changes: 0 }
+  if (Object.keys(fields).length === 0) return { ok: true, changes: 0 }
 
-  // Build venue UPDATE payload
-  const updatePayload = {}
-  for (const { field, newVal } of diff) {
-    updatePayload[field] = newVal
-  }
-  updatePayload.updated_at = new Date().toISOString()
-
-  // Add pipeline-writable fields to manually_edited_fields (additive, no removal)
-  const existingProtected = venue.manually_edited_fields ?? []
-  const newProtected = [
-    ...existingProtected,
-    ...diff
-      .filter(d => PIPELINE_WRITABLE.has(d.field))
-      .map(d => d.field)
-      .filter(f => !existingProtected.includes(f)),
-  ]
-  if (newProtected.length > existingProtected.length) {
-    updatePayload.manually_edited_fields = newProtected
-  }
-
-  // 1. Update venue
-  const { error: updateErr } = await supabase
-    .from('venues')
-    .update(updatePayload)
-    .eq('id', venue.id)
-
-  if (updateErr) throw new Error(`Update failed: ${updateErr.message}`)
-
-  // 2. Insert one log row per changed field
-  const logRows = diff.map(({ field, oldVal, newVal }) => ({
-    venue_id:   venue.id,
-    field_name: field,
-    old_value:  oldVal !== null ? { value: oldVal } : null,
-    new_value:  newVal !== null ? { value: newVal } : null,
-    edited_by:  actor,
-    source:     'workbench',
-  }))
-
-  const { error: logErr } = await supabase
-    .from('venue_edit_log')
-    .insert(logRows)
-
-  if (logErr) {
-    console.warn('[venue:edit] log insert failed (non-fatal):', logErr.message)
-  }
-
-  return { ok: true, changes: diff.length, diff }
+  const result = await adminFetch(`/venues/${venue.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ fields }),
+  })
+  if (!result.ok) throw new Error(result.error ?? result.message ?? 'Save failed')
+  return { ok: true, changes: result.changes, diff: result.diff, venue: result.venue }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +303,7 @@ function ChangeSummary({ venue, formValues }) {
 // VenueEditForm — main component
 // ---------------------------------------------------------------------------
 
-export default function VenueEditForm({ venue, actor, onSaved, onCancel }) {
+export default function VenueEditForm({ venue, onSaved, onCancel }) {
   const [formValues, setFormValues] = useState({})
   const [errors, setErrors]         = useState({})
   const [saving, setSaving]         = useState(false)
@@ -398,15 +366,11 @@ export default function VenueEditForm({ venue, actor, onSaved, onCancel }) {
   }
 
   async function handleSave() {
-    if (!actor) {
-      setSaveError('Seleccioná un actor antes de guardar.')
-      return
-    }
     if (!validate()) return
     setSaving(true)
     setSaveError(null)
     try {
-      const result = await saveVenueEdits(venue, formValues, actor)
+      const result = await saveVenueEdits(venue, formValues)
       onSaved(result)
     } catch (err) {
       setSaveError(err.message)
@@ -434,13 +398,6 @@ export default function VenueEditForm({ venue, actor, onSaved, onCancel }) {
     <div className="p-5 text-xs overflow-y-auto h-full">
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-bold text-gray-900 text-sm">Editar venue</h2>
-        <div className="flex items-center gap-2">
-          {!actor && (
-            <span className="text-[10px] text-orange-600 bg-orange-50 border border-orange-200 px-2 py-1 rounded">
-              Sin actor — seleccioná uno para guardar
-            </span>
-          )}
-        </div>
       </div>
 
       <div className="mb-4 px-3 py-2 bg-gray-50 rounded border border-gray-200">
@@ -493,7 +450,7 @@ export default function VenueEditForm({ venue, actor, onSaved, onCancel }) {
         </button>
         <button
           onClick={handleSave}
-          disabled={saving || !actor}
+          disabled={saving}
           className="text-[10px] px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40"
         >
           {saving ? 'Guardando…' : 'Guardar'}
