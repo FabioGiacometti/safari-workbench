@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from './supabase.js'
+import { authClient } from './LoginForm.jsx'
 
 const PAGE_SIZE = 50
 
@@ -11,98 +11,50 @@ const STATUS_BADGE = {
   rolled_back: 'bg-orange-100 text-orange-700',
 }
 
-const ACTORS = ['fabio', 'admin']
-const ACTOR_KEY = 'workbench:actor'
-
 // ---------------------------------------------------------------------------
-// ActorSelector
+// API helpers
 // ---------------------------------------------------------------------------
 
-function ActorSelector({ actor, onChange }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500">Actor:</span>
-      {actor ? (
-        <div className="flex items-center gap-1">
-          <span className="text-xs font-medium text-gray-900 bg-gray-100 px-2 py-0.5 rounded">
-            {actor}
-          </span>
-          <button
-            onClick={() => onChange(null)}
-            className="text-xs text-gray-400 hover:text-gray-600"
-            title="Cambiar actor"
-          >
-            ✕
-          </button>
-        </div>
-      ) : (
-        <select
-          className="text-xs border border-orange-300 rounded px-2 py-0.5 bg-orange-50 text-gray-700"
-          defaultValue=""
-          onChange={e => e.target.value && onChange(e.target.value)}
-        >
-          <option value="" disabled>Seleccioná un actor…</option>
-          {ACTORS.map(a => <option key={a} value={a}>{a}</option>)}
-        </select>
-      )}
-    </div>
-  )
+async function getToken() {
+  const { data: { session } } = await authClient.auth.getSession()
+  return session?.access_token ?? null
 }
 
-// ---------------------------------------------------------------------------
-// Data fetching
-// ---------------------------------------------------------------------------
-
-async function fetchCandidates({ status, offset }) {
-  let q = supabase
-    .from('venue_merge_candidates')
-    .select(`
-      id, candidate_type, confidence, status, rejection_reason, created_at,
-      rule_was_created, created_rule_id,
-      keep:venue_id_keep ( id, canonical_name, city, fingerprint, lat, lng, event_count ),
-      drop:venue_id_drop ( id, canonical_name, city, fingerprint, lat, lng, event_count )
-    `, { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + PAGE_SIZE - 1)
-
-  if (status !== 'all') q = q.eq('status', status)
-
-  const { data, error, count } = await q
-  if (error) throw new Error(error.message)
-  return { rows: data ?? [], total: count ?? 0 }
-}
-
-async function updateStatus(id, status, rejectionReason = null) {
-  const { error } = await supabase
-    .from('venue_merge_candidates')
-    .update({ status, ...(rejectionReason != null ? { rejection_reason: rejectionReason } : {}) })
-    .eq('id', id)
-  if (error) throw new Error(error.message)
-}
-
-async function callMerge(candidateId, actor) {
-  const { data, error } = await supabase.rpc('merge_venue_pair', {
-    p_candidate_id: candidateId,
-    p_actor: actor,
+async function apiFetch(path, opts = {}) {
+  const token = await getToken()
+  const res = await fetch(`/api/admin/${path}`, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: token ? `Bearer ${token}` : '',
+      ...(opts.headers ?? {}),
+    },
   })
-  if (error) throw new Error(error.message)
-  return data
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const msg = body?.error ?? `HTTP ${res.status}`
+    throw Object.assign(new Error(msg), { status: res.status, body })
+  }
+  return body
 }
 
-async function callRollback(candidateId, actor) {
-  const { data, error } = await supabase.rpc('rollback_venue_merge', {
-    p_candidate_id: candidateId,
-    p_actor: actor,
-  })
-  if (error) throw new Error(error.message)
-  return data
+async function fetchCandidates({ status, page }) {
+  const qs = new URLSearchParams({ status, page: String(page) })
+  return apiFetch(`venue-candidates?${qs}`)
+}
+
+async function fetchCandidateRow(id) {
+  // Re-fetch a single row by listing with all statuses and filtering client-side.
+  // (No GET /venue-candidates/:id route — full re-fetch is acceptably cheap.)
+  const { rows } = await apiFetch(`venue-candidates?status=all&page=1`)
+  return rows?.find(r => r.id === id) ?? null
 }
 
 // ---------------------------------------------------------------------------
 // CandidateRow
 // ---------------------------------------------------------------------------
 
-function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, opId, opStatus, opResult }) {
+function CandidateRow({ row, onApprove, onReject, onMerge, onRollback, opId, opStatus, opResult }) {
   const [expanded, setExpanded] = useState(false)
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false)
   const isWorking = opId === row.id
@@ -142,7 +94,7 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
 
           {/* Result banner */}
           {myResult && (
-            <div className="mb-3 text-xs px-3 py-2 rounded bg-gray-900 text-green-400 font-mono">
+            <div className={`mb-3 text-xs px-3 py-2 rounded font-mono ${myResult.error ? 'bg-red-50 text-red-700' : 'bg-gray-900 text-green-400'}`}>
               {JSON.stringify(myResult, null, 2)}
             </div>
           )}
@@ -155,7 +107,7 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
                 disabled={isWorking}
                 className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-50"
               >
-                {isWorking && opStatus === 'working' ? 'Saving…' : 'Aprobar'}
+                {isWorking && opStatus === 'working' ? 'Guardando…' : 'Aprobar'}
               </button>
               <RejectButton id={row.id} onReject={onReject} disabled={isWorking} />
             </div>
@@ -165,22 +117,18 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
             <div className="flex gap-2 items-center">
               <button
                 onClick={() => onMerge(row.id)}
-                disabled={isWorking || !actor}
+                disabled={isWorking}
                 className="px-3 py-1.5 bg-green-700 text-white text-xs rounded hover:bg-green-800 disabled:opacity-50"
-                title={!actor ? 'Seleccioná un actor primero' : undefined}
               >
                 {isWorking && opStatus === 'working' ? 'Mergeando…' : '⚡ Ejecutar merge'}
               </button>
               <button
-                onClick={() => onApprove(row.id, 'pending')}
+                onClick={() => onApprove(row.id, 'restore_pending')}
                 disabled={isWorking}
                 className="px-2 py-1 text-xs text-gray-500 border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 ml-auto"
               >
                 Desaprobar
               </button>
-              {!actor && (
-                <span className="text-xs text-orange-500">⚠ Seleccioná un actor para mergear</span>
-              )}
             </div>
           )}
 
@@ -198,9 +146,8 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
               {!showRollbackConfirm ? (
                 <button
                   onClick={() => setShowRollbackConfirm(true)}
-                  disabled={isWorking || !actor}
+                  disabled={isWorking}
                   className="ml-auto px-3 py-1.5 bg-orange-100 text-orange-700 text-xs rounded hover:bg-orange-200 disabled:opacity-50"
-                  title={!actor ? 'Seleccioná un actor primero' : undefined}
                 >
                   ↩ Rollback
                 </button>
@@ -226,8 +173,17 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
           )}
 
           {row.status === 'rejected' && (
-            <div className="text-xs text-gray-500">
-              ✗ Rechazado{row.rejection_reason ? `: "${row.rejection_reason}"` : ''}
+            <div className="flex gap-2 items-center">
+              <span className="text-xs text-gray-500">
+                ✗ Rechazado{row.rejection_reason ? `: "${row.rejection_reason}"` : ''}
+              </span>
+              <button
+                onClick={() => onApprove(row.id, 'restore_pending')}
+                disabled={isWorking}
+                className="ml-auto px-2 py-1 text-xs text-gray-500 border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50"
+              >
+                Restaurar
+              </button>
             </div>
           )}
 
@@ -235,8 +191,8 @@ function CandidateRow({ row, actor, onApprove, onReject, onMerge, onRollback, op
             <div className="text-xs text-orange-700">↩ Revertido</div>
           )}
 
-          {isWorking && opStatus === 'error' && (
-            <div className="text-xs text-red-600 mt-1">Error al guardar</div>
+          {isWorking && opStatus === 'error' && myResult && (
+            <div className="text-xs text-red-600 mt-1">Error: {myResult.error}</div>
           )}
         </div>
       )}
@@ -280,14 +236,15 @@ function RejectButton({ id, onReject, disabled }) {
     <div className="flex gap-2 items-center">
       <input
         className="text-xs border border-gray-300 rounded px-2 py-1 w-48"
-        placeholder="Motivo (opcional)"
+        placeholder="Motivo de rechazo"
         value={reason}
         onChange={e => setReason(e.target.value)}
         autoFocus
       />
       <button
-        onClick={() => { onReject(id, reason); setOpen(false) }}
-        className="px-3 py-1.5 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200"
+        onClick={() => { if (reason.trim()) { onReject(id, reason); setOpen(false) } }}
+        disabled={!reason.trim()}
+        className="px-3 py-1.5 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200 disabled:opacity-50"
       >
         Confirmar rechazo
       </button>
@@ -306,123 +263,106 @@ export default function VenueCandidates() {
   const [filter, setFilter]       = useState('pending')
   const [rows, setRows]           = useState([])
   const [total, setTotal]         = useState(0)
-  const [offset, setOffset]       = useState(0)
+  const [page, setPage]           = useState(1)
+  const [pages, setPages]         = useState(1)
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
   const [opId, setOpId]           = useState(null)
   const [opStatus, setOpStatus]   = useState(null)
   const [opResult, setOpResult]   = useState(null)
-  const [actor, setActor]         = useState(() => localStorage.getItem(ACTOR_KEY) ?? null)
 
-  const handleActorChange = (a) => {
-    setActor(a)
-    if (a) localStorage.setItem(ACTOR_KEY, a)
-    else localStorage.removeItem(ACTOR_KEY)
-  }
-
-  const load = useCallback(async (f, o) => {
+  const load = useCallback(async (f, p) => {
     setLoading(true)
     setError(null)
     try {
-      const result = await fetchCandidates({ status: f, offset: o })
+      const result = await fetchCandidates({ status: f, page: p })
       setRows(result.rows)
       setTotal(result.total)
+      setPages(result.pages)
     } catch (err) {
       setError(err.message)
     }
     setLoading(false)
   }, [])
 
-  useEffect(() => { load(filter, offset) }, [load, filter, offset])
+  useEffect(() => { load(filter, page) }, [load, filter, page])
 
   const handleFilterChange = (f) => {
     setFilter(f)
-    setOffset(0)
+    setPage(1)
   }
 
-  const handleApprove = useCallback(async (id, targetStatus = 'approved') => {
+  // Shared: after any state-changing operation, re-fetch the row from server
+  const refreshRow = useCallback(async (id) => {
+    try {
+      // Re-fetch current page to get the updated row in context
+      const result = await fetchCandidates({ status: filter, page })
+      setRows(result.rows)
+      setTotal(result.total)
+      setPages(result.pages)
+    } catch (_) {
+      // Silent — stale row is acceptable if refresh fails; user can reload
+    }
+  }, [filter, page])
+
+  const handleApprove = useCallback(async (id, action = 'approve') => {
     setOpId(id); setOpStatus('working'); setOpResult(null)
     try {
-      await updateStatus(id, targetStatus)
+      const endpoint = action === 'restore_pending' ? 'restore-pending' : 'approve'
+      await apiFetch(`venue-candidates/${id}/${endpoint}`, { method: 'POST' })
       setOpStatus('done')
-      setRows(prev => prev.map(r => r.id === id ? { ...r, status: targetStatus } : r))
+      await refreshRow(id)
     } catch (err) {
       setOpStatus('error')
-      console.error('approve failed:', err.message)
+      setOpResult({ error: err.message })
     }
     setOpId(null)
-  }, [])
+  }, [refreshRow])
 
   const handleReject = useCallback(async (id, reason) => {
     setOpId(id); setOpStatus('working'); setOpResult(null)
     try {
-      await updateStatus(id, 'rejected', reason || null)
+      await apiFetch(`venue-candidates/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      })
       setOpStatus('done')
-      setRows(prev => prev.map(r => r.id === id ? { ...r, status: 'rejected', rejection_reason: reason || null } : r))
+      await refreshRow(id)
     } catch (err) {
       setOpStatus('error')
-      console.error('reject failed:', err.message)
+      setOpResult({ error: err.message })
     }
     setOpId(null)
-  }, [])
+  }, [refreshRow])
 
   const handleMerge = useCallback(async (id) => {
-    if (!actor) return
     setOpId(id); setOpStatus('working'); setOpResult(null)
     try {
-      const result = await callMerge(id, actor)
+      const result = await apiFetch(`venue-candidates/${id}/merge`, { method: 'POST' })
       setOpStatus('done')
-      setOpResult(result)
-      // Refresh the row from DB to get updated status + rule fields
-      const { data } = await supabase
-        .from('venue_merge_candidates')
-        .select(`
-          id, candidate_type, confidence, status, rejection_reason, created_at,
-          rule_was_created, created_rule_id,
-          keep:venue_id_keep ( id, canonical_name, city, fingerprint, lat, lng, event_count ),
-          drop:venue_id_drop ( id, canonical_name, city, fingerprint, lat, lng, event_count )
-        `)
-        .eq('id', id)
-        .single()
-      if (data) setRows(prev => prev.map(r => r.id === id ? data : r))
+      setOpResult(result.result?.merge ?? result)
+      await refreshRow(id)
     } catch (err) {
       setOpStatus('error')
       setOpResult({ error: err.message })
-      console.error('merge failed:', err.message)
     }
-    // Keep opId set so result stays visible; clear after brief delay
+    // Keep opId briefly so result banner stays visible
     setTimeout(() => setOpId(null), 5000)
-  }, [actor])
+  }, [refreshRow])
 
   const handleRollback = useCallback(async (id) => {
-    if (!actor) return
     setOpId(id); setOpStatus('working'); setOpResult(null)
     try {
-      const result = await callRollback(id, actor)
+      const result = await apiFetch(`venue-candidates/${id}/rollback`, { method: 'POST' })
       setOpStatus('done')
-      setOpResult(result)
-      // Refresh the row
-      const { data } = await supabase
-        .from('venue_merge_candidates')
-        .select(`
-          id, candidate_type, confidence, status, rejection_reason, created_at,
-          rule_was_created, created_rule_id,
-          keep:venue_id_keep ( id, canonical_name, city, fingerprint, lat, lng, event_count ),
-          drop:venue_id_drop ( id, canonical_name, city, fingerprint, lat, lng, event_count )
-        `)
-        .eq('id', id)
-        .single()
-      if (data) setRows(prev => prev.map(r => r.id === id ? data : r))
+      setOpResult(result.result?.rollback ?? result)
+      await refreshRow(id)
     } catch (err) {
       setOpStatus('error')
       setOpResult({ error: err.message })
-      console.error('rollback failed:', err.message)
     }
     setTimeout(() => setOpId(null), 5000)
-  }, [actor])
-
-  const totalPages  = Math.ceil(total / PAGE_SIZE)
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1
+  }, [refreshRow])
 
   return (
     <div className="h-full flex flex-col">
@@ -434,24 +374,21 @@ export default function VenueCandidates() {
             Venues con mismo nombre y coords idénticas — uno tiene city=NULL
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-4">
-          <ActorSelector actor={actor} onChange={handleActorChange} />
-          <div className="flex gap-2">
-            {['pending', 'approved', 'rejected', 'merged', 'rolled_back', 'all'].map(s => (
-              <button
-                key={s}
-                onClick={() => handleFilterChange(s)}
-                className={[
-                  'px-3 py-1 text-xs rounded-full border',
-                  filter === s
-                    ? 'bg-gray-900 text-white border-gray-900'
-                    : 'border-gray-300 text-gray-600 hover:border-gray-400',
-                ].join(' ')}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+        <div className="ml-auto flex items-center gap-2">
+          {['pending', 'approved', 'rejected', 'merged', 'rolled_back', 'all'].map(s => (
+            <button
+              key={s}
+              onClick={() => handleFilterChange(s)}
+              className={[
+                'px-3 py-1 text-xs rounded-full border',
+                filter === s
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'border-gray-300 text-gray-600 hover:border-gray-400',
+              ].join(' ')}
+            >
+              {s}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -459,19 +396,19 @@ export default function VenueCandidates() {
       <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs text-gray-500 flex gap-4 flex-shrink-0">
         <span>{total} candidatos</span>
         <span className="ml-auto">
-          Página {currentPage} de {totalPages || 1}
-          {totalPages > 1 && (
+          Página {page} de {pages || 1}
+          {pages > 1 && (
             <>
               <button
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                disabled={offset === 0}
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
                 className="ml-3 px-2 py-0.5 border border-gray-300 rounded text-xs disabled:opacity-40 hover:bg-gray-100"
               >
                 ←
               </button>
               <button
-                onClick={() => setOffset(offset + PAGE_SIZE)}
-                disabled={offset + PAGE_SIZE >= total}
+                onClick={() => setPage(p => Math.min(pages, p + 1))}
+                disabled={page >= pages}
                 className="ml-1 px-2 py-0.5 border border-gray-300 rounded text-xs disabled:opacity-40 hover:bg-gray-100"
               >
                 →
@@ -498,7 +435,6 @@ export default function VenueCandidates() {
           <CandidateRow
             key={row.id}
             row={row}
-            actor={actor}
             onApprove={handleApprove}
             onReject={handleReject}
             onMerge={handleMerge}

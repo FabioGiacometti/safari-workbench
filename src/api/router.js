@@ -2,26 +2,33 @@ import { notFound, badRequest } from './errors.js'
 import * as events from './handlers/events.js'
 import * as venues from './handlers/venues.js'
 import * as discrepancies from './handlers/discrepancies.js'
+import * as candidates from './handlers/candidates.js'
 
 /**
  * Dispatches to the correct handler based on path segments and HTTP method.
  * pathSegments comes from req.query._path split on '/'.
  *
  * Routes:
- *   GET    []                                  → events.list
- *   POST   []                                  → events.create  (body = event fields)
- *   GET    [id]                                → events.get
- *   PATCH  [id]                                → events.update
- *   POST   [id, 'publish']                     → events.publish
- *   POST   [id, 'cancel']                      → events.cancel
- *   GET    [id, 'audit']                       → events.audit
- *   GET    ['venues']                          → venues.list
- *   GET    ['venues', 'search']                → venues.search
- *   GET    ['venues', venueId, 'discrepancies']→ discrepancies.listForVenue
- *   GET    ['venues', id]  (id is UUID)        → venues.detail
- *   PATCH  ['venues', id]  (id is UUID)        → venues.update
- *   GET    ['discrepancies']                   → discrepancies.list
- *   POST   ['discrepancies', id, 'resolve']    → discrepancies.resolve
+ *   GET    []                                         → events.list
+ *   POST   []                                         → events.create  (body = event fields)
+ *   GET    [id]                                       → events.get
+ *   PATCH  [id]                                       → events.update
+ *   POST   [id, 'publish']                            → events.publish
+ *   POST   [id, 'cancel']                             → events.cancel
+ *   GET    [id, 'audit']                              → events.audit
+ *   GET    ['venues']                                 → venues.list
+ *   GET    ['venues', 'search']                       → venues.search
+ *   GET    ['venues', venueId, 'discrepancies']       → discrepancies.listForVenue
+ *   GET    ['venues', id]  (id is UUID)               → venues.detail
+ *   PATCH  ['venues', id]  (id is UUID)               → venues.update
+ *   GET    ['discrepancies']                          → discrepancies.list
+ *   POST   ['discrepancies', id, 'resolve']           → discrepancies.resolve
+ *   GET    ['venue-candidates']                       → candidates.list
+ *   POST   ['venue-candidates', id, 'approve']        → candidates.approve
+ *   POST   ['venue-candidates', id, 'reject']         → candidates.reject
+ *   POST   ['venue-candidates', id, 'restore-pending']→ candidates.restorePending
+ *   POST   ['venue-candidates', id, 'merge']          → candidates.merge
+ *   POST   ['venue-candidates', id, 'rollback']       → candidates.rollback
  */
 export async function route(req, res, user, pathSegments) {
   const [seg0, seg1, seg2, seg3] = pathSegments
@@ -29,6 +36,23 @@ export async function route(req, res, user, pathSegments) {
 
   // UUID pattern — used to distinguish /venues/:id from /venues/search
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+  // /api/admin/venue-candidates
+  if (seg0 === 'venue-candidates' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return candidates.list(req, res, user)
+  }
+
+  // /api/admin/venue-candidates/:id/approve|reject|restore-pending|merge|rollback
+  if (seg0 === 'venue-candidates' && seg1 && seg2 && !seg3) {
+    if (method !== 'POST') return badRequest(res, 'method_not_allowed')
+    if (seg2 === 'approve')         return candidates.approve(req, res, user, seg1)
+    if (seg2 === 'reject')          return candidates.reject(req, res, user, seg1)
+    if (seg2 === 'restore-pending') return candidates.restorePending(req, res, user, seg1)
+    if (seg2 === 'merge')           return candidates.merge(req, res, user, seg1)
+    if (seg2 === 'rollback')        return candidates.rollback(req, res, user, seg1)
+    return notFound(res)
+  }
 
   // /api/admin/discrepancies
   if (seg0 === 'discrepancies' && !seg1) {
