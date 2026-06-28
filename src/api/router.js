@@ -40,6 +40,7 @@ import * as conflicts from './handlers/conflicts.js'
  *   POST   ['conflicts', id, 'resolve-rule']          → conflicts.resolveRule
  *   POST   ['conflicts', id, 'resolve-venue-geo']     → conflicts.resolveVenueGeo
  *   POST   ['conflicts', id, 'resolve-discovery']     → conflicts.resolveDiscovery
+ *   POST   ['conflicts', id, 'reconcile']             → conflicts.reconcileVenueGeo
  */
 export async function route(req, res, user, pathSegments) {
   const [seg0, seg1, seg2, seg3] = pathSegments
@@ -65,10 +66,15 @@ export async function route(req, res, user, pathSegments) {
     return notFound(res)
   }
 
-  // /api/admin/geo-entities
+  // /api/admin/geo-entities          — full list or ?q= search on same path
+  // /api/admin/geo-entities/search   — explicit search sub-path
   if (seg0 === 'geo-entities' && !seg1) {
     if (method !== 'GET') return badRequest(res, 'method_not_allowed')
     return conflicts.geoEntities(req, res, user)
+  }
+  if (seg0 === 'geo-entities' && seg1 === 'search' && !seg2) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return conflicts.geoEntitySearch(req, res, user)
   }
 
   // /api/admin/conflicts  (list)
@@ -91,6 +97,7 @@ export async function route(req, res, user, pathSegments) {
       if (seg2 === 'resolve-rule')       return conflicts.resolveRule(req, res, user, seg1)
       if (seg2 === 'resolve-venue-geo')  return conflicts.resolveVenueGeo(req, res, user, seg1)
       if (seg2 === 'resolve-discovery')  return conflicts.resolveDiscovery(req, res, user, seg1)
+      if (seg2 === 'reconcile')          return conflicts.reconcileVenueGeo(req, res, user, seg1)
       return notFound(res)
     }
     return badRequest(res, 'method_not_allowed')

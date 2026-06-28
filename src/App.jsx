@@ -4,6 +4,7 @@ import VenueCandidates from './VenueCandidates.jsx'
 import VenueCatalog from './VenueCatalog.jsx'
 import VenueDiscrepancies from './VenueDiscrepancies.jsx'
 import EventCreateForm from './EventCreateForm.jsx'
+import GeoEntityCombobox from './GeoEntityCombobox.jsx'
 import {
   isActionable,
   isNonActionable,
@@ -210,7 +211,7 @@ function NonActionableNotice({ conflictType }) {
 // ClusterDetail — right panel
 // ---------------------------------------------------------------------------
 
-function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistory, ruleHistoryLoading, onAction, onRefreshRuleHistory }) {
+function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistory, ruleHistoryLoading, onAction, onRefreshRuleHistory, apiFetchFn }) {
   const [selectedEntityId, setSelectedEntityId] = useState(null)
   const [scopeGlobal, setScopeGlobal]           = useState(false)
   const [opStatus, setOpStatus]                 = useState(null)
@@ -229,6 +230,14 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
   const isVenueWithoutGeo = cluster.conflict_type === 'VENUE_WITHOUT_GEO'
   const isGeoDiscovery    = cluster.conflict_type === 'GEO_ENTITY_DISCOVERY'
   const venueCandidate    = isVenueWithoutGeo ? (candidates[0] ?? null) : null
+  // Stale state: venue was already resolved (geo_entity_id set on venue) but the pipeline
+  // upsert overwrote conflict status back to resolution_failed. Detected when the conflict
+  // row carries resolved_geo_entity_id — meaning the RPC ran successfully before — while
+  // status is still open/in_review/resolution_failed. The operator should reconcile, not
+  // repeat the geographic selection.
+  const isVenueGeoAlreadyResolved = isVenueWithoutGeo &&
+    !!cluster.resolved_geo_entity_id &&
+    ['open', 'in_review', 'resolution_failed'].includes(cluster.status)
 
   // For ORPHAN_CITY: pre-select the existing candidate to guide the operator
   useEffect(() => {
@@ -260,19 +269,34 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
   }
 
   async function handleVenueGeoFix() {
-    if (!selectedEntityId || !venueCandidate) return
+    if (!selectedEntityId) return
     setOpStatus('loading')
     try {
       await apiFetch(`conflicts/${cluster.id}/resolve-venue-geo`, 'POST', {
         geo_entity_id: selectedEntityId,
       })
       setOpStatus('done')
-      setOpMsg('venue geo entity attached — re-warm pipeline to activate')
+      setOpMsg('La entidad geográfica quedó asociada al local.')
       setTimeout(() => onAction('refresh'), 1500)
     } catch (err) {
       setOpStatus('error')
-      setOpMsg(err.code === 'venue_not_found' ? 'venue could not be identified from conflict data'
-             : err.code === 'not_found'       ? 'conflict or geo entity not found'
+      setOpMsg(err.code === 'venue_not_found' ? 'No se pudo identificar el local desde los datos del conflicto.'
+             : err.code === 'not_found'       ? 'No se encontró el conflicto o la entidad geográfica.'
+             : err.message)
+    }
+  }
+
+  async function handleReconcile() {
+    setOpStatus('loading')
+    try {
+      await apiFetch(`conflicts/${cluster.id}/reconcile`, 'POST', {})
+      setOpStatus('done')
+      setOpMsg('Conflicto sincronizado. El local ya tenía la entidad geográfica asignada.')
+      setTimeout(() => onAction('refresh'), 1500)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'venue_geo_not_yet_set' ? 'El local aún no tiene entidad geográfica asignada. Use la selección manual.'
+             : err.code === 'venue_not_found'        ? 'No se pudo identificar el local desde los datos del conflicto.'
              : err.message)
     }
   }
@@ -402,33 +426,73 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
         <NonActionableNotice conflictType={cluster.conflict_type} />
       )}
 
-      {/* VENUE_WITHOUT_GEO — attach geo entity to venue */}
-      {isVenueWithoutGeo && venueCandidate && (
-        <div className="mb-6 rounded border border-yellow-200 bg-yellow-50 px-4 py-3">
-          <h2 className="text-xs text-gray-400 uppercase tracking-widest mb-2">Venue to fix</h2>
-          <p className="text-xs text-gray-700 font-mono mb-3">
-            {venueCandidate.display_name}
-            <span className="text-gray-400 ml-1">({venueCandidate.id})</span>
+      {/* VENUE_WITHOUT_GEO — stale state: venue already resolved, conflict status out of sync */}
+      {isVenueWithoutGeo && isVenueGeoAlreadyResolved && (
+        <div className="mb-6 rounded border border-green-200 bg-green-50 px-4 py-3">
+          <h2 className="text-sm font-semibold text-gray-800 mb-1">
+            Este conflicto ya está resuelto en el catálogo
+          </h2>
+          <p className="text-xs text-gray-600 mb-3">
+            El local ya está asociado con{' '}
+            <span className="font-medium">{cluster.resolved_geo_entity_id}</span>.
+            El estado del conflicto quedó desactualizado por una re-evaluación del pipeline
+            y puede sincronizarse sin volver a elegir una ciudad.
           </p>
-          <h2 className="text-xs text-gray-400 uppercase tracking-widest mb-2">Assign geo entity</h2>
-          <select
-            value={selectedEntityId ?? ''}
-            onChange={e => setSelectedEntityId(e.target.value || null)}
-            className="w-full bg-white border border-gray-300 text-gray-900 text-xs rounded px-2 py-1.5 mb-3 focus:outline-none focus:border-blue-400"
+          {cluster.resolved_by && (
+            <p className="text-xs text-gray-400 mb-3">
+              Resuelto originalmente por {cluster.resolved_by}
+              {cluster.resolved_at ? ` el ${new Date(cluster.resolved_at).toLocaleString('es-AR')}` : ''}.
+            </p>
+          )}
+          <button
+            onClick={handleReconcile}
+            disabled={opStatus === 'loading' || opStatus === 'done'}
+            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs rounded transition-colors"
           >
-            <option value="">— select geo entity —</option>
-            {geoEntities.map(g => (
-              <option key={g.id} value={g.id}>
-                {g.display_name} ({g.level}{g.country_code ? `, ${g.country_code}` : ''})
-              </option>
-            ))}
-          </select>
+            {opStatus === 'loading' ? '…' : 'Sincronizar estado del conflicto'}
+          </button>
+        </div>
+      )}
+
+      {/* VENUE_WITHOUT_GEO — normal state: attach geo entity to venue */}
+      {isVenueWithoutGeo && !isVenueGeoAlreadyResolved && (
+        <div className="mb-6 rounded border border-yellow-200 bg-yellow-50 px-4 py-3">
+          <h2 className="text-sm font-semibold text-gray-800 mb-1">
+            Local sin ciudad canónica asociada
+          </h2>
+          <p className="text-xs text-gray-600 mb-3">
+            Este local fue identificado, pero todavía no está vinculado a una entidad
+            geográfica canónica. Las coordenadas y la ciudad escrita no reemplazan esta
+            asociación. Al confirmar, se actualiza el catálogo de locales; los eventos
+            existentes no se reescriben directamente, pero las próximas resoluciones del
+            sistema usarán la entidad confirmada.
+          </p>
+
+          {venueCandidate && (
+            <div className="mb-3 text-xs text-gray-700">
+              <span className="text-gray-400 mr-1">Local:</span>
+              <span className="font-medium">{venueCandidate.display_name}</span>
+            </div>
+          )}
+
+          <label className="block text-xs text-gray-500 mb-1">
+            Buscar ciudad o región
+          </label>
+          <GeoEntityCombobox
+            apiFetch={apiFetchFn}
+            candidates={[]}
+            value={selectedEntityId}
+            onChange={setSelectedEntityId}
+            disabled={opStatus === 'loading'}
+            data-testid="venue-without-geo-combobox"
+          />
+
           <button
             onClick={handleVenueGeoFix}
             disabled={!selectedEntityId || opStatus === 'loading'}
-            className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-40 text-white text-xs rounded transition-colors"
+            className="mt-3 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs rounded transition-colors"
           >
-            {opStatus === 'loading' ? '…' : 'Attach geo entity →'}
+            {opStatus === 'loading' ? '…' : 'Confirmar asociación geográfica'}
           </button>
         </div>
       )}
@@ -879,6 +943,7 @@ export default function App({ session, onSignOut }) {
               ruleHistory={ruleHistory}
               ruleHistoryLoading={ruleHistoryLoading}
               onAction={handleAction}
+              apiFetchFn={apiFetch}
               onRefreshRuleHistory={() => loadRuleHistory(selected.id)}
             />
           : (
