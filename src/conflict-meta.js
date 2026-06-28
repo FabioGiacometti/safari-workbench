@@ -235,6 +235,58 @@ export function conflictExplanation(cluster) {
 }
 
 // ---------------------------------------------------------------------------
+// Confidence bands
+// ---------------------------------------------------------------------------
+
+export function confidenceBand(score) {
+  if (score == null) return { band: 'unknown', label: 'Sin dato', color: 'gray' }
+  if (score >= 0.85) return { band: 'high',   label: 'Alta confianza', color: 'green' }
+  if (score >= 0.65) return { band: 'medium', label: 'Confianza media — revisar', color: 'yellow' }
+  return               { band: 'low',    label: 'Confianza baja — verificar manualmente', color: 'red' }
+}
+
+// ---------------------------------------------------------------------------
+// Spanish UI copy — single source of truth for conflict resolution panel
+// ---------------------------------------------------------------------------
+
+export const COPY = {
+  reportedValue:        'Valor reportado',
+  systemInterpretation: 'Interpretación del sistema',
+  noCandidates:         'Sin coincidencias sugeridas',
+  noCandidatesDetail:   'El sistema no encontró una ciudad o región suficientemente confiable para este valor. Busque manualmente la entidad correcta.',
+  suggestedCandidate:   'Candidato sugerido',
+  multipleCandidates:   'Candidatos disponibles',
+  searchOther:          'Buscar otra entidad',
+  noneOfThese:          'Ninguna de estas opciones',
+  scopeProvider:        (provider) => `Recordar para futuros eventos de ${provider}`,
+  scopeProviderDetail:  (provider, raw) => `Cuando ${provider} vuelva a enviar "${raw}", el sistema usará esta entidad automáticamente.`,
+  scopeGlobal:          'Aplicar a todos los proveedores',
+  scopeGlobalDetail:    (raw) => `Cualquier proveedor que envíe "${raw}" usará esta entidad. Usar solo cuando el valor sea inequívoco.`,
+  scopeGlobalWarning:   'Esta regla global afecta a todos los proveedores. Aplicar solo si el valor es inequívoco para cualquier fuente.',
+  lowConfAck:           'Esta coincidencia tiene baja confianza. Verificar que la entidad sugerida sea correcta antes de continuar.',
+  nameMismatchWarning:  (raw, name) => `El valor reportado "${raw}" y el candidato "${name}" son muy diferentes. Verificar que correspondan a la misma ubicación.`,
+  // Primary action labels — reflect that a persistent rule is always created
+  confirmAndRemember:   (provider) => `Confirmar y recordar para ${provider}`,
+  createGlobalRule:     'Crear regla para todos los proveedores',
+  // Consequence summary — shown before the operator commits
+  consequenceProvider:  (raw, name, provider) => `Vas a asociar "${raw}" con ${name}. Esta regla se aplicará cuando ${provider} vuelva a enviar este valor.`,
+  consequenceGlobal:    (raw, name) => `Vas a asociar "${raw}" con ${name} para cualquier proveedor que envíe este valor.`,
+  consequenceNoRewrite: 'Los eventos existentes no se reescriben. Los próximos ingresos del pipeline usarán esta asociación.',
+  // Success copy — states conflict closed, rule persisted, rule ID, no rewrite
+  ruleCreated: (ruleId, scope, provider) => {
+    const scopeDesc = scope === 'global'
+      ? 'para todos los proveedores'
+      : `para ${provider}`
+    return `Conflicto cerrado. Regla persistente creada ${scopeDesc} (id: ${ruleId}). Los eventos existentes no se reescriben.`
+  },
+  markInReview:  'Marcar en revisión',
+  providerBug:   'Error del proveedor',
+  dismiss:       'Ignorar',
+  loading:       '…',
+  errorGeneric:  'Ocurrió un error. Intentar de nuevo.',
+}
+
+// ---------------------------------------------------------------------------
 // Badge styling — duplicated here so App.jsx imports from one place
 // ---------------------------------------------------------------------------
 

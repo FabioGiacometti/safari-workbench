@@ -14,6 +14,8 @@ import {
   editorialPriorityScore,
   conflictExplanation,
   conflictBadgeStyle,
+  confidenceBand,
+  COPY,
 } from './conflict-meta.js'
 
 // ---------------------------------------------------------------------------
@@ -208,20 +210,255 @@ function NonActionableNotice({ conflictType }) {
 }
 
 // ---------------------------------------------------------------------------
+// Levenshtein similarity — rough name-mismatch detection
+// ---------------------------------------------------------------------------
+
+function stringSimilarity(a, b) {
+  const s = a.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+  const t = b.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+  if (s === t) return 1
+  const m = s.length, n = t.length
+  if (m === 0 || n === 0) return 0
+  const dp = Array.from({ length: m + 1 }, (_, i) => Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)))
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = s[i-1] === t[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+  return 1 - dp[m][n] / Math.max(m, n)
+}
+
+// ---------------------------------------------------------------------------
+// CandidateCard
+// ---------------------------------------------------------------------------
+
+function CandidateCard({ candidate, isSelected, onSelect }) {
+  const band = confidenceBand(candidate.confidence)
+  const bandColor = {
+    high:    'border-green-300 bg-green-50',
+    medium:  'border-yellow-300 bg-yellow-50',
+    low:     'border-red-300 bg-red-50',
+    unknown: 'border-gray-200 bg-white',
+  }[band.band]
+  const labelColor = {
+    high:    'text-green-700',
+    medium:  'text-yellow-700',
+    low:     'text-red-700',
+    unknown: 'text-gray-500',
+  }[band.band]
+
+  return (
+    <button
+      data-testid={`candidate-card-${candidate.id}`}
+      aria-pressed={isSelected}
+      onClick={() => onSelect(isSelected ? null : candidate.id)}
+      className={[
+        'w-full text-left px-3 py-2.5 rounded border-2 transition-colors',
+        isSelected
+          ? 'border-blue-500 bg-blue-50'
+          : `${bandColor} hover:border-blue-300`,
+      ].join(' ')}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-gray-900">{candidate.display_name}</span>
+        <span className={`text-xs font-medium ${labelColor}`}>{band.label}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-0.5">
+        <span className="text-xs text-gray-500">{candidate.level}</span>
+        {candidate.source && (
+          <span className="text-xs text-gray-400">· {candidate.source}</span>
+        )}
+        <span className="text-xs text-gray-400 ml-auto">{(candidate.confidence * 100).toFixed(0)}%</span>
+      </div>
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConflictResolutionPanel
+// ---------------------------------------------------------------------------
+
+function ConflictResolutionPanel({
+  cluster, candidates, selectedEntityId, setSelectedEntityId,
+  scopeGlobal, setScopeGlobal, lowConfAcknowledged, setLowConfAcknowledged,
+  opStatus, onCreateRule, apiFetchFn,
+}) {
+  const selectedCandidate = candidates.find(c => c.id === selectedEntityId) ?? null
+  const isLowConf = selectedCandidate != null && selectedCandidate.confidence < 0.65
+  const showNameMismatch = selectedCandidate != null && cluster.raw_value &&
+    stringSimilarity(cluster.raw_value, selectedCandidate.display_name) < 0.4
+  const canAct = !!selectedEntityId && (!isLowConf || lowConfAcknowledged) && opStatus !== 'loading'
+
+  const primaryLabel = scopeGlobal
+    ? COPY.createGlobalRule
+    : COPY.confirmAndRemember(cluster.provider)
+
+  return (
+    <div className="mb-6" data-testid="conflict-resolution-panel">
+
+      {/* State A: no candidates — search directly */}
+      {candidates.length === 0 && (
+        <div className="mb-4">
+          <p className="text-xs text-gray-500 mb-1 font-semibold">{COPY.noCandidates}</p>
+          <p className="text-xs text-gray-400 mb-2">{COPY.noCandidatesDetail}</p>
+          <GeoEntityCombobox
+            apiFetch={apiFetchFn}
+            candidates={[]}
+            value={selectedEntityId}
+            onChange={setSelectedEntityId}
+            disabled={opStatus === 'loading'}
+            data-testid="geo-entity-combobox"
+          />
+        </div>
+      )}
+
+      {/* State B/C: 1+ candidates */}
+      {candidates.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">
+            {candidates.length === 1 ? COPY.suggestedCandidate : COPY.multipleCandidates}
+          </p>
+          <div className="space-y-2" data-testid="candidate-list">
+            {candidates.map(c => (
+              <CandidateCard
+                key={c.id}
+                candidate={c}
+                isSelected={selectedEntityId === c.id}
+                onSelect={setSelectedEntityId}
+              />
+            ))}
+          </div>
+
+          {/* Search for a different entity */}
+          <details className="mt-3">
+            <summary className="text-xs text-blue-600 cursor-pointer select-none hover:underline">
+              {COPY.searchOther}
+            </summary>
+            <div className="mt-2">
+              <GeoEntityCombobox
+                apiFetch={apiFetchFn}
+                candidates={[]}
+                value={selectedEntityId}
+                onChange={setSelectedEntityId}
+                disabled={opStatus === 'loading'}
+                data-testid="geo-entity-combobox-alt"
+              />
+            </div>
+          </details>
+
+          {/* None of these */}
+          {selectedEntityId && candidates.every(c => c.id !== selectedEntityId) && (
+            <p className="mt-1 text-xs text-gray-400">Usando entidad seleccionada manualmente.</p>
+          )}
+        </div>
+      )}
+
+      {/* Low-confidence acknowledgment */}
+      {isLowConf && !lowConfAcknowledged && (
+        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2" data-testid="low-conf-warning">
+          <p className="text-xs text-red-700 mb-2">{COPY.lowConfAck}</p>
+          <button
+            onClick={() => setLowConfAcknowledged(true)}
+            className="text-xs px-2 py-1 rounded border border-red-300 bg-white text-red-700 hover:bg-red-50"
+          >
+            Entendido — continuar
+          </button>
+        </div>
+      )}
+
+      {/* Name mismatch warning */}
+      {showNameMismatch && (
+        <div className="mb-3 rounded border border-orange-200 bg-orange-50 px-3 py-2" data-testid="name-mismatch-warning">
+          <p className="text-xs text-orange-700">
+            {COPY.nameMismatchWarning(cluster.raw_value, selectedCandidate.display_name)}
+          </p>
+        </div>
+      )}
+
+      {/* Consequence summary */}
+      {selectedEntityId && (
+        <div className="mb-4 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 space-y-1" data-testid="consequence-summary">
+          <p>
+            {scopeGlobal
+              ? COPY.consequenceGlobal(cluster.raw_value, selectedCandidate?.display_name ?? selectedEntityId)
+              : COPY.consequenceProvider(cluster.raw_value, selectedCandidate?.display_name ?? selectedEntityId, cluster.provider)
+            }
+          </p>
+          <p className="text-gray-400">{COPY.consequenceNoRewrite}</p>
+        </div>
+      )}
+
+      {/* Scope: provider (default) vs global (advanced) */}
+      <div className="mb-3">
+        <label className="flex items-start gap-2 cursor-pointer mb-2">
+          <input
+            type="radio"
+            name={`scope-${cluster.id}`}
+            checked={!scopeGlobal}
+            onChange={() => setScopeGlobal(false)}
+            className="mt-0.5"
+            data-testid="scope-provider"
+          />
+          <span className="text-xs text-gray-700">
+            <span className="font-medium">{COPY.scopeProvider(cluster.provider)}</span>
+            <span className="block text-gray-400 mt-0.5">{COPY.scopeProviderDetail(cluster.provider, cluster.raw_value)}</span>
+          </span>
+        </label>
+
+        <details>
+          <summary className="text-xs text-gray-500 cursor-pointer select-none hover:underline ml-1">
+            Opciones avanzadas
+          </summary>
+          <label className="flex items-start gap-2 cursor-pointer mt-2 ml-1" data-testid="scope-global-label">
+            <input
+              type="radio"
+              name={`scope-${cluster.id}`}
+              checked={scopeGlobal}
+              onChange={() => setScopeGlobal(true)}
+              className="mt-0.5"
+              data-testid="scope-global"
+            />
+            <span className="text-xs text-gray-700">
+              <span className="font-medium">{COPY.scopeGlobal}</span>
+              <span className="block text-gray-400 mt-0.5">{COPY.scopeGlobalDetail(cluster.raw_value)}</span>
+            </span>
+          </label>
+          {scopeGlobal && (
+            <p className="mt-1 ml-6 text-xs text-orange-600 font-medium" data-testid="global-scope-warning">
+              {COPY.scopeGlobalWarning}
+            </p>
+          )}
+        </details>
+      </div>
+
+      {/* Primary action */}
+      <button
+        data-testid="primary-action"
+        onClick={onCreateRule}
+        disabled={!canAct}
+        className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded transition-colors"
+      >
+        {opStatus === 'loading' ? COPY.loading : primaryLabel}
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ClusterDetail — right panel
 // ---------------------------------------------------------------------------
 
 function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistory, ruleHistoryLoading, onAction, onRefreshRuleHistory, apiFetchFn }) {
-  const [selectedEntityId, setSelectedEntityId] = useState(null)
-  const [scopeGlobal, setScopeGlobal]           = useState(false)
-  const [opStatus, setOpStatus]                 = useState(null)
-  const [opMsg, setOpMsg]                       = useState('')
+  const [selectedEntityId, setSelectedEntityId]   = useState(null)
+  const [scopeGlobal, setScopeGlobal]             = useState(false)
+  const [opStatus, setOpStatus]                   = useState(null)
+  const [opMsg, setOpMsg]                         = useState('')
+  const [lowConfAcknowledged, setLowConfAcknowledged] = useState(false)
 
   useEffect(() => {
     setSelectedEntityId(null)
     setScopeGlobal(false)
     setOpStatus(null)
     setOpMsg('')
+    setLowConfAcknowledged(false)
   }, [cluster.id])
 
   const candidates    = cluster.candidate_entities ?? []
@@ -239,24 +476,20 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
     !!cluster.resolved_geo_entity_id &&
     ['open', 'in_review', 'resolution_failed'].includes(cluster.status)
 
-  // For ORPHAN_CITY: pre-select the existing candidate to guide the operator
-  useEffect(() => {
-    if (cluster.conflict_type === 'ORPHAN_CITY' && candidates.length === 1 && !selectedEntityId) {
-      setSelectedEntityId(candidates[0].id)
-    }
-  }, [cluster.id, cluster.conflict_type, candidates, selectedEntityId])
-
   async function handleCreateRule() {
     if (!selectedEntityId || !canCreateRule) return
     const providerScope = scopeGlobal ? '' : cluster.provider
     setOpStatus('loading')
     try {
-      await apiFetch(`conflicts/${cluster.id}/resolve-rule`, 'POST', {
+      const json = await apiFetch(`conflicts/${cluster.id}/resolve-rule`, 'POST', {
         geo_entity_id:  selectedEntityId,
         provider_scope: providerScope,
       })
+      // Handler returns { ok, conflict_id, result: { ok, status, rule_id, geo_entity_id } }
+      const ruleId = json?.result?.rule_id ?? '—'
+      const scope  = scopeGlobal ? 'global' : 'provider'
       setOpStatus('done')
-      setOpMsg('rule created — re-run pipeline to confirm auto_resolved')
+      setOpMsg(COPY.ruleCreated(ruleId, scope, cluster.provider))
       onRefreshRuleHistory()
       setTimeout(() => onAction('refresh'), 1500)
     } catch (err) {
@@ -538,53 +771,21 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
         </div>
       )}
 
-      {/* Candidate entity buttons — only for actionable types */}
-      {actionability === 'actionable' && candidates.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Candidates</h2>
-          <div className="flex flex-wrap gap-2">
-            {candidates.map(c => (
-              <button
-                key={c.id}
-                onClick={() => setSelectedEntityId(prev => prev === c.id ? null : c.id)}
-                className={[
-                  'px-3 py-1.5 rounded border text-xs transition-colors',
-                  selectedEntityId === c.id
-                    ? 'bg-blue-600 border-blue-700 text-white'
-                    : 'bg-white border-gray-300 text-gray-700 hover:border-blue-400',
-                ].join(' ')}
-              >
-                <span className="font-medium">{c.display_name}</span>
-                <span className="ml-1.5 opacity-70">{c.level}</span>
-                <span className="ml-1.5 opacity-50">{(c.confidence * 100).toFixed(0)}%</span>
-              </button>
-            ))}
-          </div>
-          {selectedEntityId && (
-            <p className="mt-2 text-xs text-gray-400 font-mono">{selectedEntityId}</p>
-          )}
-        </div>
-      )}
-
-      {/* Fallback picker — only for actionable with no candidates */}
-      {actionability === 'actionable' && candidates.length === 0 && (
-        <div className="mb-6">
-          <h2 className="text-xs text-gray-400 uppercase tracking-widest mb-3">
-            No candidates — manual pick
-          </h2>
-          <select
-            value={selectedEntityId ?? ''}
-            onChange={e => setSelectedEntityId(e.target.value || null)}
-            className="w-full bg-white border border-gray-300 text-gray-900 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-400"
-          >
-            <option value="">— select geo entity —</option>
-            {geoEntities.map(g => (
-              <option key={g.id} value={g.id}>
-                {g.display_name} ({g.level}{g.country_code ? `, ${g.country_code}` : ''})
-              </option>
-            ))}
-          </select>
-        </div>
+      {/* Conflict resolution panel — only for actionable types */}
+      {actionability === 'actionable' && canCreateRule && (
+        <ConflictResolutionPanel
+          cluster={cluster}
+          candidates={candidates}
+          selectedEntityId={selectedEntityId}
+          setSelectedEntityId={setSelectedEntityId}
+          scopeGlobal={scopeGlobal}
+          setScopeGlobal={setScopeGlobal}
+          lowConfAcknowledged={lowConfAcknowledged}
+          setLowConfAcknowledged={setLowConfAcknowledged}
+          opStatus={opStatus}
+          onCreateRule={handleCreateRule}
+          apiFetchFn={apiFetchFn}
+        />
       )}
 
       {/* Sample events */}
@@ -611,74 +812,37 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
         )}
       </div>
 
-      {/* Actions */}
+      {/* Secondary actions */}
       <div className="border-t border-gray-200 pt-4 mb-6">
-        <h2 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Actions</h2>
-
-        {/* Scope toggle + create rule — only for actionable types */}
-        {canCreateRule && (
-          <div className="mb-3">
-            <div className="flex items-center gap-2 mb-2">
-              <button
-                onClick={() => setScopeGlobal(false)}
-                className={[
-                  'px-2.5 py-1 rounded text-xs border transition-colors',
-                  !scopeGlobal
-                    ? 'bg-gray-800 border-gray-900 text-white'
-                    : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400',
-                ].join(' ')}
-              >
-                Provider ({cluster.provider})
-              </button>
-              <button
-                onClick={() => setScopeGlobal(true)}
-                className={[
-                  'px-2.5 py-1 rounded text-xs border transition-colors',
-                  scopeGlobal
-                    ? 'bg-gray-800 border-gray-900 text-white'
-                    : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400',
-                ].join(' ')}
-              >
-                Global (all providers)
-              </button>
-            </div>
-            <button
-              onClick={handleCreateRule}
-              disabled={!selectedEntityId || opStatus === 'loading'}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs rounded transition-colors"
-            >
-              {opStatus === 'loading' ? '…' : 'Create rule →'}
-            </button>
-          </div>
-        )}
-
-        {/* Secondary actions — always available */}
         <div className="flex gap-2 flex-wrap">
           <button
+            data-testid="action-in-review"
             onClick={handleInReview}
             disabled={opStatus === 'loading' || cluster.status === 'in_review'}
             className="px-3 py-1.5 bg-white hover:bg-blue-50 disabled:opacity-40 text-blue-600 text-xs rounded border border-blue-300 transition-colors"
           >
-            Mark in review
+            {COPY.markInReview}
           </button>
           <button
+            data-testid="action-provider-bug"
             onClick={handleProviderBug}
             disabled={opStatus === 'loading'}
             className="px-3 py-1.5 bg-white hover:bg-gray-50 disabled:opacity-40 text-gray-600 text-xs rounded border border-gray-300 transition-colors"
           >
-            Provider bug
+            {COPY.providerBug}
           </button>
           <button
+            data-testid="action-dismiss"
             onClick={handleDismiss}
             disabled={opStatus === 'loading'}
             className="px-3 py-1.5 bg-white hover:bg-gray-50 disabled:opacity-40 text-gray-600 text-xs rounded border border-gray-300 transition-colors"
           >
-            Dismiss
+            {COPY.dismiss}
           </button>
         </div>
 
         {opMsg && (
-          <p className={`mt-2 text-xs ${opStatus === 'error' ? 'text-red-600' : 'text-gray-500'}`}>
+          <p className={`mt-2 text-xs ${opStatus === 'error' ? 'text-red-600' : 'text-gray-500'}`} data-testid="op-message">
             {opMsg}
           </p>
         )}
