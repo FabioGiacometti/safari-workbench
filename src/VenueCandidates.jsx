@@ -276,9 +276,9 @@ export default function VenueCandidates() {
     setError(null)
     try {
       const result = await fetchCandidates({ status: f, page: p })
-      setRows(result.rows)
-      setTotal(result.total)
-      setPages(result.pages)
+      setRows(result.rows ?? [])
+      setTotal(result.total ?? 0)
+      setPages(result.pages ?? 1)
     } catch (err) {
       setError(err.message)
     }
@@ -297,9 +297,9 @@ export default function VenueCandidates() {
     try {
       // Re-fetch current page to get the updated row in context
       const result = await fetchCandidates({ status: filter, page })
-      setRows(result.rows)
-      setTotal(result.total)
-      setPages(result.pages)
+      setRows(result.rows ?? [])
+      setTotal(result.total ?? 0)
+      setPages(result.pages ?? 1)
     } catch (_) {
       // Silent — stale row is acceptable if refresh fails; user can reload
     }

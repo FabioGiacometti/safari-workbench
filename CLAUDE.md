@@ -18,8 +18,7 @@ Requires `.env.local` (not committed):
 ```
 VITE_SUPABASE_URL=...          # Supabase project URL (safe to expose)
 VITE_SUPABASE_ANON_KEY=...     # Anon key — used only by LoginForm for auth
-# VITE_SUPABASE_KEY has been removed — all tabs migrated to /api/admin/*
-#   Rotate the service-role key in Supabase dashboard (it was exposed in bundle until 2026-06-27)
+# VITE_SUPABASE_KEY — PERMANENTLY REMOVED. Do not add it back.
 # VITE_API_BASE_URL is retired — EventCreateForm now calls /api/admin/* directly
 ```
 
@@ -27,7 +26,9 @@ Server-only (set in Vercel dashboard, no VITE_ prefix):
 ```
 SUPABASE_URL=...
 SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...  # Workbench-specific key: workbench_safari_backends_2026_06
+                               # Safari uses a separate key: safari_backends_2026_06
+                               # Legacy default key disabled 2026-06-28
 ```
 
 Tailwind is loaded via CDN in `index.html`, not installed as a package.
@@ -65,6 +66,9 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | `src/api/handlers/conflicts.js` | Server: conflict queue reads + 6 resolution actions |
 | `api/admin.js` | Vercel function entry point (1 of 2 functions) |
 | `api/health.js` | GET /api/health → {ok:true} (2 of 2 functions) |
+| `docs/current-event-authoring.md` | Verified current event-authoring capability |
+| `docs/backlog/robust-editorial-event-authoring.md` | Deferred event-authoring backlog |
+| `docs/decisions/` | Architecture and prioritization decisions |
 
 ### Migration status
 
@@ -76,7 +80,21 @@ Single-page React app (Vite + Supabase) for an internal editorial ops team. No r
 | VenueCandidates | `/api/admin/*` server backend | ✅ Migrated (2026-06-27) |
 | VenueDiscrepancies | `/api/admin/*` server backend | ✅ Migrated (prior session) |
 
-**All tabs migrated.** `VITE_SUPABASE_KEY` removed from bundle. Rotate the service-role key in Supabase dashboard.
+**All tabs migrated.** `VITE_SUPABASE_KEY` permanently removed. Service-role key rotation complete 2026-06-28.
+
+### Security architecture (post-rotation, 2026-06-28)
+
+- **No privileged credential is browser-exposed.** Bundles contain only the anon/publishable key.
+- **Workbench server** uses secret named `workbench_safari_backends_2026_06` via `SUPABASE_SERVICE_ROLE_KEY`.
+- **Safari server + GitHub Actions pipeline** use secret named `safari_backends_2026_06` via `SUPABASE_SERVICE_ROLE_KEY`.
+- **Legacy default key** (old JWT-format service-role key) disabled 2026-06-28.
+- All privileged DB operations are server-side only (`/api/admin/*` handlers + Supabase service-role RPCs).
+- The anon key (`VITE_SUPABASE_ANON_KEY`) is the only credential permitted in any `VITE_*` variable.
+
+### Known non-blocking technical debt
+
+- `run_conflicts_matrix.mjs` and `test_rpc_debug.mjs` reference `env.VITE_SUPABASE_KEY` (now undefined). These are local dev/test scripts, not production code. Update them to use `SUPABASE_SERVICE_ROLE_KEY` before next use.
+- `check_bundle.mjs` and `check_bundle2.mjs` were one-off verification scripts from the migration; can be deleted.
 
 ### Conflict types
 

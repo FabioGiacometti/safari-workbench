@@ -65,10 +65,15 @@ export async function route(req, res, user, pathSegments) {
     return notFound(res)
   }
 
-  // /api/admin/geo-entities
+  // /api/admin/geo-entities          — full list or ?q= search on same path
+  // /api/admin/geo-entities/search   — explicit search sub-path
   if (seg0 === 'geo-entities' && !seg1) {
     if (method !== 'GET') return badRequest(res, 'method_not_allowed')
     return conflicts.geoEntities(req, res, user)
+  }
+  if (seg0 === 'geo-entities' && seg1 === 'search' && !seg2) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return conflicts.geoEntitySearch(req, res, user)
   }
 
   // /api/admin/conflicts  (list)

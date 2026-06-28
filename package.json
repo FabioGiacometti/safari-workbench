@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5174",
+    "dev:api": "node dev-api-server.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
