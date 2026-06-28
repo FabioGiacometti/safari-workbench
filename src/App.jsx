@@ -230,6 +230,14 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
   const isVenueWithoutGeo = cluster.conflict_type === 'VENUE_WITHOUT_GEO'
   const isGeoDiscovery    = cluster.conflict_type === 'GEO_ENTITY_DISCOVERY'
   const venueCandidate    = isVenueWithoutGeo ? (candidates[0] ?? null) : null
+  // Stale state: venue was already resolved (geo_entity_id set on venue) but the pipeline
+  // upsert overwrote conflict status back to resolution_failed. Detected when the conflict
+  // row carries resolved_geo_entity_id — meaning the RPC ran successfully before — while
+  // status is still open/in_review/resolution_failed. The operator should reconcile, not
+  // repeat the geographic selection.
+  const isVenueGeoAlreadyResolved = isVenueWithoutGeo &&
+    !!cluster.resolved_geo_entity_id &&
+    ['open', 'in_review', 'resolution_failed'].includes(cluster.status)
 
   // For ORPHAN_CITY: pre-select the existing candidate to guide the operator
   useEffect(() => {
@@ -274,6 +282,21 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
       setOpStatus('error')
       setOpMsg(err.code === 'venue_not_found' ? 'No se pudo identificar el local desde los datos del conflicto.'
              : err.code === 'not_found'       ? 'No se encontró el conflicto o la entidad geográfica.'
+             : err.message)
+    }
+  }
+
+  async function handleReconcile() {
+    setOpStatus('loading')
+    try {
+      await apiFetch(`conflicts/${cluster.id}/reconcile`, 'POST', {})
+      setOpStatus('done')
+      setOpMsg('Conflicto sincronizado. El local ya tenía la entidad geográfica asignada.')
+      setTimeout(() => onAction('refresh'), 1500)
+    } catch (err) {
+      setOpStatus('error')
+      setOpMsg(err.code === 'venue_geo_not_yet_set' ? 'El local aún no tiene entidad geográfica asignada. Use la selección manual.'
+             : err.code === 'venue_not_found'        ? 'No se pudo identificar el local desde los datos del conflicto.'
              : err.message)
     }
   }
@@ -403,8 +426,36 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
         <NonActionableNotice conflictType={cluster.conflict_type} />
       )}
 
-      {/* VENUE_WITHOUT_GEO — attach geo entity to venue */}
-      {isVenueWithoutGeo && (
+      {/* VENUE_WITHOUT_GEO — stale state: venue already resolved, conflict status out of sync */}
+      {isVenueWithoutGeo && isVenueGeoAlreadyResolved && (
+        <div className="mb-6 rounded border border-green-200 bg-green-50 px-4 py-3">
+          <h2 className="text-sm font-semibold text-gray-800 mb-1">
+            Este conflicto ya está resuelto en el catálogo
+          </h2>
+          <p className="text-xs text-gray-600 mb-3">
+            El local ya está asociado con{' '}
+            <span className="font-medium">{cluster.resolved_geo_entity_id}</span>.
+            El estado del conflicto quedó desactualizado por una re-evaluación del pipeline
+            y puede sincronizarse sin volver a elegir una ciudad.
+          </p>
+          {cluster.resolved_by && (
+            <p className="text-xs text-gray-400 mb-3">
+              Resuelto originalmente por {cluster.resolved_by}
+              {cluster.resolved_at ? ` el ${new Date(cluster.resolved_at).toLocaleString('es-AR')}` : ''}.
+            </p>
+          )}
+          <button
+            onClick={handleReconcile}
+            disabled={opStatus === 'loading' || opStatus === 'done'}
+            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs rounded transition-colors"
+          >
+            {opStatus === 'loading' ? '…' : 'Sincronizar estado del conflicto'}
+          </button>
+        </div>
+      )}
+
+      {/* VENUE_WITHOUT_GEO — normal state: attach geo entity to venue */}
+      {isVenueWithoutGeo && !isVenueGeoAlreadyResolved && (
         <div className="mb-6 rounded border border-yellow-200 bg-yellow-50 px-4 py-3">
           <h2 className="text-sm font-semibold text-gray-800 mb-1">
             Local sin ciudad canónica asociada

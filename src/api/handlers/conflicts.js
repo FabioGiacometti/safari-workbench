@@ -181,6 +181,20 @@ export async function resolveVenueGeo(req, res, user, conflictId) {
   res.status(200).json({ ok: true, conflict_id: conflictId, result: data })
 }
 
+// POST /api/admin/conflicts/:id/reconcile
+// Closes a VENUE_WITHOUT_GEO conflict whose referenced venue already has valid geo_entity_id.
+// No new geo selection required — the venue was already correctly tagged by a prior resolution.
+export async function reconcileVenueGeo(req, res, user, conflictId) {
+  const db = getAdminClient()
+  const { data, error } = await db.rpc('reconcile_venue_without_geo', {
+    p_conflict_id: conflictId,
+    p_actor:       user.email,
+  })
+
+  if (error) return mapConflictError(res, error, 'reconcile_venue_without_geo')
+  res.status(200).json({ ok: true, conflict_id: conflictId, result: data })
+}
+
 // POST /api/admin/conflicts/:id/resolve-discovery
 // Body: { action: 'approve' | 'reject' }
 export async function resolveDiscovery(req, res, user, conflictId) {
@@ -223,6 +237,7 @@ function mapConflictError(res, err, rpcName) {
     case 'no_rule_possible':     return badRequest(res, 'no_rule_possible')
     case 'venue_not_found':      return notFound(res, 'venue_not_found')
     case 'no_discovery_candidate': return notFound(res, 'no_discovery_candidate')
-    default:                     return serverError(res, `${rpcName} failed`, err)
+    case 'not_satisfied':          return badRequest(res, 'venue_geo_not_yet_set')
+    default:                       return serverError(res, `${rpcName} failed`, err)
   }
 }

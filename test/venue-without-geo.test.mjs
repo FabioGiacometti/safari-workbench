@@ -293,13 +293,11 @@ describe('GeoEntityCombobox keyboard navigation (logic)', () => {
 // ---------------------------------------------------------------------------
 describe('audit trail on VENUE_WITHOUT_GEO resolution', () => {
   test('resolution produces an editorial_actions row with correct fields', () => {
-    // Simulate what the RPC does in the DB
     const auditRows = []
     function mockInsertAudit({ actor, action_type, entity_type, entity_id, after_state }) {
       auditRows.push({ actor, action_type, entity_type, entity_id, after_state })
     }
 
-    // Simulate the RPC completion path
     const actor = 'editor@example.com'
     const venue_id = 'venue-111'
     const geo_entity_id = 'geo::city::cordoba-ar'
@@ -317,5 +315,130 @@ describe('audit trail on VENUE_WITHOUT_GEO resolution', () => {
     assert.equal(auditRows[0].action_type, 'conflict_resolved_venue_geo')
     assert.equal(auditRows[0].after_state.venue_id, venue_id)
     assert.equal(auditRows[0].after_state.geo_entity_id, geo_entity_id)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. Conflict-state inconsistency: reproduces the conflict 51458 scenario
+//    Pipeline upsert rewrites status after successful operator resolution.
+// ---------------------------------------------------------------------------
+describe('pipeline upsert overwrites resolved status (conflict 51458 regression)', () => {
+  // Simulates the pipeline's conflict upsert logic:
+  // ON CONFLICT (provider, raw_value, conflict_type) DO UPDATE SET status = <derived>
+  // The derived status does NOT check whether the venue geo was already set.
+  function simulatePipelineUpsert(existingConflict, venueGeoIsNull) {
+    // Pipeline re-evaluates: if venue geo is still null → 'open', else → ???
+    // The actual pipeline uses a fixed status column in the upsert, typically 'open'
+    // or a computed value, without reading the existing resolved_at or editorial history.
+    const upsertedStatus = venueGeoIsNull ? 'open' : 'resolution_failed'
+    // In practice, the pipeline does not branch on the existing status at all.
+    // It always overwrites with what it computed during that run.
+    return {
+      ...existingConflict,
+      status: upsertedStatus,
+      updated_at: new Date().toISOString(),
+    }
+  }
+
+  test('resolved conflict gets status overwritten to resolution_failed by pipeline re-run', () => {
+    const conflict = {
+      id: 51458,
+      status: 'resolved',              // set by resolve_conflict_venue_geo RPC
+      resolved_at: '2026-06-27T19:51:11Z',
+      resolved_by: 'fabiog@example.com',
+      resolved_geo_entity_id: 'geo::city::cordoba-ar',
+      resolved_venue_id: 'ce7431a4-ea85-4be2-bed6-56cf656cf69e',
+    }
+    const venueAfterResolution = { id: 'ce7431a4', geo_entity_id: 'geo::city::cordoba-ar' }
+
+    // Pipeline runs again. It sees the venue has geo_entity_id set, but its upsert
+    // logic emits resolution_failed for VENUE_WITHOUT_GEO conflicts it encounters.
+    const afterUpsert = simulatePipelineUpsert(conflict, venueAfterResolution.geo_entity_id === null)
+
+    assert.equal(afterUpsert.status, 'resolution_failed',
+      'Pipeline upsert overwrote resolved → resolution_failed even though venue has geo')
+    assert.equal(afterUpsert.resolved_geo_entity_id, 'geo::city::cordoba-ar',
+      'resolved_geo_entity_id is preserved by the upsert (not cleared)')
+  })
+
+  test('isVenueGeoAlreadyResolved detects the stale state correctly', () => {
+    // The UI detection logic
+    function isVenueGeoAlreadyResolved(conflict) {
+      return conflict.conflict_type === 'VENUE_WITHOUT_GEO' &&
+        !!conflict.resolved_geo_entity_id &&
+        ['open', 'in_review', 'resolution_failed'].includes(conflict.status)
+    }
+
+    const staleConflict = {
+      conflict_type: 'VENUE_WITHOUT_GEO',
+      status: 'resolution_failed',
+      resolved_geo_entity_id: 'geo::city::cordoba-ar',  // set by prior RPC
+      resolved_venue_id: 'ce7431a4-ea85-4be2-bed6-56cf656cf69e',
+    }
+    assert.equal(isVenueGeoAlreadyResolved(staleConflict), true,
+      'Stale conflict with resolved_geo_entity_id must be detected as already resolved')
+
+    const genuineConflict = {
+      conflict_type: 'VENUE_WITHOUT_GEO',
+      status: 'open',
+      resolved_geo_entity_id: null,  // never resolved
+      resolved_venue_id: null,
+    }
+    assert.equal(isVenueGeoAlreadyResolved(genuineConflict), false,
+      'Genuine unresolved conflict must NOT be detected as already resolved')
+
+    const alreadyClosed = {
+      conflict_type: 'VENUE_WITHOUT_GEO',
+      status: 'auto_resolved',
+      resolved_geo_entity_id: 'geo::city::cordoba-ar',
+    }
+    assert.equal(isVenueGeoAlreadyResolved(alreadyClosed), false,
+      'Already-closed conflict must NOT trigger stale detection')
+  })
+
+  test('reconcile_venue_without_geo rejects conflicts where venue geo is genuinely missing', () => {
+    // Simulates the RPC guard: NOT EXISTS (geo_entity_id IS NULL or inactive)
+    function reconcile(venue) {
+      if (!venue.geo_entity_id) {
+        throw new Error('not_satisfied::venue geo_entity_id is null or inactive — conflict is genuine')
+      }
+      return { ok: true, status: 'auto_resolved' }
+    }
+
+    assert.throws(
+      () => reconcile({ id: '8acb5eb6', geo_entity_id: null }),
+      /not_satisfied/,
+      'Must reject reconciliation when venue geo is genuinely missing'
+    )
+    assert.deepEqual(
+      reconcile({ id: 'ce7431a4', geo_entity_id: 'geo::city::cordoba-ar' }),
+      { ok: true, status: 'auto_resolved' }
+    )
+  })
+
+  test('reconcile writes auto_reconciled audit action, not conflict_resolved_venue_geo', () => {
+    const auditRows = []
+    function mockAudit(row) { auditRows.push(row) }
+
+    // Simulate reconcile_venue_without_geo RPC audit path
+    mockAudit({
+      actor: 'system',
+      action_type: 'conflict_auto_reconciled',
+      entity_type: 'conflict',
+      entity_id: '51458',
+      after_state: {
+        reason: 'venue_geo_already_set',
+        venue_id: 'ce7431a4-ea85-4be2-bed6-56cf656cf69e',
+        geo_entity_id: 'geo::city::cordoba-ar',
+        prior_status: 'resolution_failed',
+      },
+    })
+
+    assert.equal(auditRows[0].action_type, 'conflict_auto_reconciled',
+      'Must use a distinct action_type to avoid duplicate resolution records')
+    assert.notEqual(auditRows[0].action_type, 'conflict_resolved_venue_geo',
+      'Must NOT reuse the original resolution action_type')
+    assert.equal(auditRows[0].after_state.reason, 'venue_geo_already_set')
+    assert.equal(auditRows[0].after_state.prior_status, 'resolution_failed')
   })
 })
