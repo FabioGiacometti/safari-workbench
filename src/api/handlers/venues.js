@@ -113,7 +113,7 @@ export async function detail(req, res, _user, venueId) {
     }
   }
 
-  const [events, merge_history, mutations, rules] = await Promise.all([
+  const [events, merge_history, mutations, rules, venueGenreIds] = await Promise.all([
     settle('events',
       db.from('events')
         .select('id, title, venue_name, city, year, month, day, provider, venue_fingerprint')
@@ -140,7 +140,31 @@ export async function detail(req, res, _user, venueId) {
         .or(`venue_id.eq.${venueId},match_raw_location.eq.${venue.canonical_name}`)
         .order('created_at', { ascending: false })
         .limit(10)),
+    settle('venue_genre_ids',
+      db.from('venue_genres')
+        .select('genre_id')
+        .eq('venue_id', venueId)),
   ])
+
+  // Resolve genre IDs to full GenreSummary objects, ordered by display_order.
+  // Two flat queries — consistent with the repository pattern (no nested selects).
+  let genres = []
+  if (venueGenreIds && venueGenreIds.length > 0) {
+    const genreIds = venueGenreIds.map(r => r.genre_id)
+    const { data: genreRows, error: genreErr } = await db
+      .from('genres')
+      .select('id, slug, name')
+      .in('id', genreIds)
+      .eq('is_active', true)
+      .order('display_order')
+      .order('name')
+    if (genreErr) {
+      section_errors['genres'] = genreErr.message ?? 'query_failed'
+      partial = true
+    } else {
+      genres = genreRows ?? []
+    }
+  }
 
   // If merged, fetch the winning venue (minimal projection).
   let merged_into_venue = null
@@ -157,6 +181,7 @@ export async function detail(req, res, _user, venueId) {
     partial,
     section_errors,
     venue,
+    genres,
     events,
     merge_history,
     mutations,

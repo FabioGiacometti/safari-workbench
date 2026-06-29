@@ -1,6 +1,7 @@
 import { notFound, badRequest } from './errors.js'
 import * as events from './handlers/events.js'
 import * as venues from './handlers/venues.js'
+import * as genres from './handlers/genres.js'
 import * as discrepancies from './handlers/discrepancies.js'
 import * as candidates from './handlers/candidates.js'
 import * as conflicts from './handlers/conflicts.js'
@@ -41,6 +42,9 @@ import * as conflicts from './handlers/conflicts.js'
  *   POST   ['conflicts', id, 'resolve-venue-geo']     → conflicts.resolveVenueGeo
  *   POST   ['conflicts', id, 'resolve-discovery']     → conflicts.resolveDiscovery
  *   POST   ['conflicts', id, 'reconcile']             → conflicts.reconcileVenueGeo
+ *   GET    ['genres']                                 → genres.list
+ *   GET    ['venues', venueId, 'genres']              → genres.getForVenue
+ *   PUT    ['venues', venueId, 'genres']              → genres.setForVenue
  */
 export async function route(req, res, user, pathSegments) {
   const [seg0, seg1, seg2, seg3] = pathSegments
@@ -64,6 +68,12 @@ export async function route(req, res, user, pathSegments) {
     if (seg2 === 'merge')           return candidates.merge(req, res, user, seg1)
     if (seg2 === 'rollback')        return candidates.rollback(req, res, user, seg1)
     return notFound(res)
+  }
+
+  // /api/admin/genres
+  if (seg0 === 'genres' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return genres.list(req, res, user)
   }
 
   // /api/admin/geo-entities          — full list or ?q= search on same path
@@ -131,6 +141,13 @@ export async function route(req, res, user, pathSegments) {
   if (seg0 === 'venues' && seg1 && seg2 === 'discrepancies' && !seg3) {
     if (method !== 'GET') return badRequest(res, 'method_not_allowed')
     return discrepancies.listForVenue(req, res, user, seg1)
+  }
+
+  // /api/admin/venues/:venueId/genres
+  if (seg0 === 'venues' && seg1 && seg2 === 'genres' && !seg3) {
+    if (method === 'GET') return genres.getForVenue(req, res, user, seg1)
+    if (method === 'PUT') return genres.setForVenue(req, res, user, seg1)
+    return badRequest(res, 'method_not_allowed')
   }
 
   // /api/admin/venues/:id  (detail / update)

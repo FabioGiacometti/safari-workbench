@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { authClient } from './LoginForm.jsx'
+import GenreSelector from './GenreSelector.jsx'
 
 async function adminFetch(path, options = {}) {
   const { data: { session } } = await authClient.auth.getSession()
@@ -303,12 +304,18 @@ function ChangeSummary({ venue, formValues }) {
 // VenueEditForm — main component
 // ---------------------------------------------------------------------------
 
-export default function VenueEditForm({ venue, onSaved, onCancel }) {
-  const [formValues, setFormValues] = useState({})
-  const [errors, setErrors]         = useState({})
-  const [saving, setSaving]         = useState(false)
-  const [saveError, setSaveError]   = useState(null)
-  const [showPreview, setShowPreview] = useState(false)
+export default function VenueEditForm({ venue, initialGenres = [], onSaved, onCancel }) {
+  const [formValues, setFormValues]       = useState({})
+  const [errors, setErrors]               = useState({})
+  const [saving, setSaving]               = useState(false)
+  const [saveError, setSaveError]         = useState(null)
+  const [showPreview, setShowPreview]     = useState(false)
+
+  // Genre state — loaded from the venue detail response via initialGenres prop
+  const [selectedGenres, setSelectedGenres]     = useState(initialGenres)
+  const [genreBaseline, setGenreBaseline]       = useState(initialGenres)
+  const [availableGenres, setAvailableGenres]   = useState([])
+  const [genreSaveError, setGenreSaveError]     = useState(null)
 
   // Initialize form from current venue values
   useEffect(() => {
@@ -320,8 +327,22 @@ export default function VenueEditForm({ venue, onSaved, onCancel }) {
     setFormValues(initial)
     setErrors({})
     setSaveError(null)
+    setGenreSaveError(null)
     setShowPreview(false)
   }, [venue?.id])
+
+  // Sync genres when initialGenres prop changes (e.g. after parent re-fetches detail)
+  useEffect(() => {
+    setSelectedGenres(initialGenres)
+    setGenreBaseline(initialGenres)
+  }, [venue?.id])
+
+  // Fetch available genres once on mount
+  useEffect(() => {
+    adminFetch('/genres')
+      .then(res => { if (res.ok) setAvailableGenres(res.genres ?? []) })
+      .catch(() => {}) // non-fatal; selector simply shows no options
+  }, [])
 
   if (!venue) return null
 
@@ -365,18 +386,56 @@ export default function VenueEditForm({ venue, onSaved, onCancel }) {
     return Object.keys(errs).length === 0
   }
 
+  function genresChanged() {
+    const baselineIds = new Set(genreBaseline.map(g => g.id))
+    const selectedIds = new Set(selectedGenres.map(g => g.id))
+    if (baselineIds.size !== selectedIds.size) return true
+    for (const id of baselineIds) if (!selectedIds.has(id)) return true
+    return false
+  }
+
   async function handleSave() {
     if (!validate()) return
     setSaving(true)
     setSaveError(null)
+    setGenreSaveError(null)
+
+    let fieldResult = null
     try {
-      const result = await saveVenueEdits(venue, formValues)
-      onSaved(result)
+      fieldResult = await saveVenueEdits(venue, formValues)
     } catch (err) {
       setSaveError(err.message)
-    } finally {
       setSaving(false)
+      return // genre save skipped when field save fails
     }
+
+    // Save genres only if the selection changed from baseline
+    if (genresChanged()) {
+      try {
+        const genreRes = await adminFetch(`/venues/${venue.id}/genres`, {
+          method: 'PUT',
+          body: JSON.stringify({ genre_ids: selectedGenres.map(g => g.id) }),
+        })
+        if (!genreRes.ok) {
+          // Venue fields were saved; genre save failed. Report separately.
+          setGenreSaveError(genreRes.error ?? 'Error al guardar géneros')
+          setSaving(false)
+          // Still notify parent of the field changes that did succeed
+          onSaved(fieldResult)
+          return
+        }
+        // Update baseline so a follow-up save without changes is a no-op
+        setGenreBaseline(selectedGenres)
+      } catch (err) {
+        setGenreSaveError(err.message)
+        setSaving(false)
+        onSaved(fieldResult)
+        return
+      }
+    }
+
+    setSaving(false)
+    onSaved(fieldResult)
   }
 
   const FIELD_GROUPS = [
@@ -427,6 +486,26 @@ export default function VenueEditForm({ venue, onSaved, onCancel }) {
               error={errors[field]}
             />
           ))}
+          {group.label === 'Editorial' && (
+            <div className="mb-3">
+              <div className="flex items-center gap-2 mb-0.5">
+                <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">
+                  genres
+                </label>
+                {genresChanged() && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded">
+                    modificado
+                  </span>
+                )}
+              </div>
+              <GenreSelector
+                selectedGenres={selectedGenres}
+                availableGenres={availableGenres}
+                onChange={setSelectedGenres}
+                disabled={saving}
+              />
+            </div>
+          )}
         </div>
       ))}
 
@@ -437,6 +516,14 @@ export default function VenueEditForm({ venue, onSaved, onCancel }) {
       {saveError && (
         <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded text-[10px] text-red-700">
           {saveError}
+        </div>
+      )}
+
+      {genreSaveError && (
+        <div className="mb-3 px-3 py-2 bg-orange-50 border border-orange-200 rounded text-[10px] text-orange-700">
+          <span className="font-semibold">Los campos del venue se guardaron, pero los géneros fallaron:</span>{' '}
+          {genreSaveError}
+          <span className="block mt-0.5 text-orange-500">Podés reintentar guardando de nuevo.</span>
         </div>
       )}
 

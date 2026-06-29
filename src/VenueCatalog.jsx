@@ -109,6 +109,7 @@ function Pill({ children, color = 'gray' }) {
 
 function VenueDetail({ venueId, onNavigateTo, onEditRequest }) {
   const [venue, setVenue]               = useState(null)
+  const [genres, setGenres]             = useState([])
   const [events, setEvents]             = useState([])
   const [mergeLog, setMergeLog]         = useState([])
   const [mutations, setMutations]       = useState([])
@@ -136,6 +137,7 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest }) {
     ])
       .then(([detail, discResult]) => {
         setVenue(detail.venue)
+        setGenres(detail.genres ?? [])
         setEvents(detail.events ?? [])
         setMergeLog(detail.merge_history ?? [])
         setMutations(detail.mutations ?? [])
@@ -285,6 +287,14 @@ function VenueDetail({ venueId, onNavigateTo, onEditRequest }) {
             <span className="text-gray-400">aliases:</span>{' '}
             {venue.aliases.map((a, i) => (
               <span key={i} className="inline-block mr-1 mb-1 px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px]">{a}</span>
+            ))}
+          </div>
+        )}
+        {genres.length > 0 && (
+          <div className="mt-3">
+            <span className="text-gray-400">genres:</span>{' '}
+            {genres.map(g => (
+              <span key={g.id} className="inline-block mr-1 mb-1 px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded text-[10px]">{g.name}</span>
             ))}
           </div>
         )}
@@ -561,15 +571,20 @@ function Field({ label, value, mono, highlight }) {
 // ---------------------------------------------------------------------------
 
 function EditPanel({ venueId, onSaved, onCancel }) {
-  const [venue, setVenue]   = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError]   = useState(null)
+  const [venue, setVenue]           = useState(null)
+  const [initialGenres, setInitialGenres] = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
 
   useEffect(() => {
     if (!venueId) return
     setLoading(true)
     fetchVenueFull(venueId)
-      .then(detail => { setVenue(detail.venue); setLoading(false) })
+      .then(detail => {
+        setVenue(detail.venue)
+        setInitialGenres(detail.genres ?? [])
+        setLoading(false)
+      })
       .catch(e => { setError(e.message); setLoading(false) })
   }, [venueId])
 
@@ -584,6 +599,7 @@ function EditPanel({ venueId, onSaved, onCancel }) {
   return (
     <VenueEditForm
       venue={venue}
+      initialGenres={initialGenres}
       onSaved={onSaved}
       onCancel={onCancel}
     />
