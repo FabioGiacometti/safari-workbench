@@ -5,6 +5,7 @@ import VenueCatalog from './VenueCatalog.jsx'
 import VenueDiscrepancies from './VenueDiscrepancies.jsx'
 import EventCreateForm from './EventCreateForm.jsx'
 import GeoEntityCombobox from './GeoEntityCombobox.jsx'
+import RulesScreen from './RulesScreen.jsx'
 import {
   isActionable,
   isNonActionable,
@@ -446,12 +447,13 @@ function ConflictResolutionPanel({
 // ClusterDetail — right panel
 // ---------------------------------------------------------------------------
 
-function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistory, ruleHistoryLoading, onAction, onRefreshRuleHistory, apiFetchFn }) {
+function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistory, ruleHistoryLoading, onAction, onRefreshRuleHistory, apiFetchFn, onNavigateToRule }) {
   const [selectedEntityId, setSelectedEntityId]   = useState(null)
   const [scopeGlobal, setScopeGlobal]             = useState(false)
   const [opStatus, setOpStatus]                   = useState(null)
   const [opMsg, setOpMsg]                         = useState('')
   const [lowConfAcknowledged, setLowConfAcknowledged] = useState(false)
+  const [lastRuleId, setLastRuleId]               = useState(null)
 
   useEffect(() => {
     setSelectedEntityId(null)
@@ -459,6 +461,7 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
     setOpStatus(null)
     setOpMsg('')
     setLowConfAcknowledged(false)
+    setLastRuleId(null)
   }, [cluster.id])
 
   const candidates    = cluster.candidate_entities ?? []
@@ -486,10 +489,11 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
         provider_scope: providerScope,
       })
       // Handler returns { ok, conflict_id, result: { ok, status, rule_id, geo_entity_id } }
-      const ruleId = json?.result?.rule_id ?? '—'
+      const ruleId = json?.result?.rule_id ?? null
       const scope  = scopeGlobal ? 'global' : 'provider'
       setOpStatus('done')
-      setOpMsg(COPY.ruleCreated(ruleId, scope, cluster.provider))
+      setOpMsg(COPY.ruleCreated(ruleId ?? '—', scope, cluster.provider))
+      setLastRuleId(ruleId)
       onRefreshRuleHistory()
       setTimeout(() => onAction('refresh'), 1500)
     } catch (err) {
@@ -846,6 +850,15 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
             {opMsg}
           </p>
         )}
+        {lastRuleId && onNavigateToRule && (
+          <button
+            onClick={() => onNavigateToRule(lastRuleId)}
+            className="mt-1 text-xs text-blue-600 underline hover:text-blue-800"
+            data-testid="view-rule-link"
+          >
+            Ver regla #{lastRuleId} →
+          </button>
+        )}
       </div>
 
       {/* Rule history */}
@@ -889,6 +902,7 @@ function ClusterDetail({ cluster, events, eventsLoading, geoEntities, ruleHistor
 
 export default function App({ session, onSignOut }) {
   const [activeSection, setActiveSection]           = useState('conflicts')
+  const [rulesDeepLinkId, setRulesDeepLinkId]       = useState(null)
   const [conflicts, setConflicts]                   = useState([])
   const [selected, setSelected]                     = useState(null)
   const [sampleEvents, setSampleEvents]             = useState([])
@@ -1003,7 +1017,7 @@ export default function App({ session, onSignOut }) {
   )
 
   // Non-conflicts sections render full-height without the conflict layout
-  if (activeSection === 'venues' || activeSection === 'venues-catalog' || activeSection === 'discrepancies' || activeSection === 'crear-evento') {
+  if (activeSection === 'venues' || activeSection === 'venues-catalog' || activeSection === 'discrepancies' || activeSection === 'crear-evento' || activeSection === 'reglas') {
     return (
       <div className="h-screen flex flex-col overflow-hidden text-sm">
         <div className="flex gap-1 px-3 py-2 border-b border-gray-200 bg-white flex-shrink-0">
@@ -1012,6 +1026,7 @@ export default function App({ session, onSignOut }) {
           <TabButton label="Venues"           active={activeSection === 'venues-catalog'}      onClick={() => setActiveSection('venues-catalog')} />
           <TabButton label="Discrepancias"    active={activeSection === 'discrepancies'}       onClick={() => setActiveSection('discrepancies')} />
           <TabButton label="Crear Evento"     active={activeSection === 'crear-evento'}        onClick={() => setActiveSection('crear-evento')} />
+          <TabButton label="Reglas"           active={activeSection === 'reglas'}              onClick={() => setActiveSection('reglas')} />
           <div className="ml-auto flex items-center gap-2">
             {session?.user?.email && <span className="text-xs text-gray-400">{session.user.email}</span>}
             {onSignOut && <button onClick={onSignOut} className="text-xs text-gray-400 hover:text-gray-700">Sign out</button>}
@@ -1021,6 +1036,7 @@ export default function App({ session, onSignOut }) {
           {activeSection === 'venues'          && <VenueCandidates />}
           {activeSection === 'venues-catalog'  && <VenueCatalog />}
           {activeSection === 'discrepancies'   && <VenueDiscrepancies />}
+          {activeSection === 'reglas'          && <RulesScreen apiFetch={apiFetch} initialRuleId={rulesDeepLinkId} />}
           {activeSection === 'crear-evento'    && (
             <div className="max-w-xl mx-auto h-full overflow-y-auto">
               <EventCreateForm />
@@ -1040,6 +1056,7 @@ export default function App({ session, onSignOut }) {
         <TabButton label="Venues"           active={false} onClick={() => setActiveSection('venues-catalog')} />
         <TabButton label="Discrepancias"    active={false} onClick={() => setActiveSection('discrepancies')} />
         <TabButton label="Crear Evento"     active={false} onClick={() => setActiveSection('crear-evento')} />
+        <TabButton label="Reglas"           active={false} onClick={() => setActiveSection('reglas')} />
         <div className="ml-auto flex items-center gap-2">
           {session?.user?.email && <span className="text-xs text-gray-400">{session.user.email}</span>}
           {onSignOut && <button onClick={onSignOut} className="text-xs text-gray-400 hover:text-gray-700">Sign out</button>}
@@ -1109,6 +1126,10 @@ export default function App({ session, onSignOut }) {
               onAction={handleAction}
               apiFetchFn={apiFetch}
               onRefreshRuleHistory={() => loadRuleHistory(selected.id)}
+              onNavigateToRule={(ruleId) => {
+                setRulesDeepLinkId(ruleId)
+                setActiveSection('reglas')
+              }}
             />
           : (
             <div className="h-full flex items-center justify-center text-gray-400 text-sm">
