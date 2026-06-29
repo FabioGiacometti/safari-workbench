@@ -4,6 +4,7 @@ import * as venues from './handlers/venues.js'
 import * as discrepancies from './handlers/discrepancies.js'
 import * as candidates from './handlers/candidates.js'
 import * as conflicts from './handlers/conflicts.js'
+import * as rules from './handlers/rules.js'
 
 /**
  * Dispatches to the correct handler based on path segments and HTTP method.
@@ -41,6 +42,11 @@ import * as conflicts from './handlers/conflicts.js'
  *   POST   ['conflicts', id, 'resolve-venue-geo']     → conflicts.resolveVenueGeo
  *   POST   ['conflicts', id, 'resolve-discovery']     → conflicts.resolveDiscovery
  *   POST   ['conflicts', id, 'reconcile']             → conflicts.reconcileVenueGeo
+ *   GET    ['rules']                                  → rules.list
+ *   GET    ['rules', id]                              → rules.detail
+ *   POST   ['rules', id, 'disable']                   → rules.disable
+ *   POST   ['rules', id, 'enable']                    → rules.enable
+ *   POST   ['rules', id, 'correct']                   → rules.correct
  */
 export async function route(req, res, user, pathSegments) {
   const [seg0, seg1, seg2, seg3] = pathSegments
@@ -65,6 +71,28 @@ export async function route(req, res, user, pathSegments) {
     if (seg2 === 'rollback')        return candidates.rollback(req, res, user, seg1)
     return notFound(res)
   }
+
+  // /api/admin/rules
+  if (seg0 === 'rules' && !seg1) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return rules.list(req, res, user)
+  }
+
+  // /api/admin/rules/:id
+  if (seg0 === 'rules' && seg1 && !seg2) {
+    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
+    return rules.detail(req, res, user, seg1)
+  }
+
+  // /api/admin/rules/:id/disable|enable|correct
+  if (seg0 === 'rules' && seg1 && seg2 && !seg3) {
+    if (method !== 'POST') return badRequest(res, 'method_not_allowed')
+    if (seg2 === 'disable') return rules.disable(req, res, user, seg1)
+    if (seg2 === 'enable')  return rules.enable(req, res, user, seg1)
+    if (seg2 === 'correct') return rules.correct(req, res, user, seg1)
+    return notFound(res)
+  }
+
 
   // /api/admin/geo-entities          — full list or ?q= search on same path
   // /api/admin/geo-entities/search   — explicit search sub-path
