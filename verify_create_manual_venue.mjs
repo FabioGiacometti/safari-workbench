@@ -4,6 +4,7 @@
  * Focused verification script for the create_manual_venue RPC and
  * POST /api/admin/venues API. Calls the RPC directly via service-role client
  * so tests are independent of the dev API server.
+ * 18 test assertions (17 original + 1 added for empty-fields-before-required ordering).
  *
  * Usage:
  *   node verify_create_manual_venue.mjs
@@ -98,9 +99,13 @@ function expectError(label, error, codePrefix) {
 console.log('\n── create_manual_venue: validation ──')
 
 {
-  // 1. Missing canonical_name
-  const { data, error } = await rpc({}, 'test@example.com')
-  expectError('missing canonical_name → required error', error, 'required:canonical_name')
+  // 1a. Empty fields object → empty fields error (hits before required check)
+  const { data: d1, error: e1 } = await rpc({}, 'test@example.com')
+  expectError('empty fields object → empty fields error', e1, 'empty fields')
+
+  // 1b. Fields present but canonical_name omitted → required error
+  const { data: d2, error: e2 } = await rpc({ city: 'Buenos Aires' }, 'test@example.com')
+  expectError('fields without canonical_name → required error', e2, 'required:canonical_name')
 }
 
 {
