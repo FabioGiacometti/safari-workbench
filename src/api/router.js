@@ -19,6 +19,7 @@ import * as rules from './handlers/rules.js'
  *   POST   [id, 'cancel']                             → events.cancel
  *   GET    [id, 'audit']                              → events.audit
  *   GET    ['venues']                                 → venues.list
+ *   POST   ['venues']                                 → venues.create
  *   GET    ['venues', 'search']                       → venues.search
  *   GET    ['venues', venueId, 'discrepancies']       → discrepancies.listForVenue
  *   GET    ['venues', id]  (id is UUID)               → venues.detail
@@ -143,10 +144,11 @@ export async function route(req, res, user, pathSegments) {
     return discrepancies.resolve(req, res, user, seg1)
   }
 
-  // /api/admin/venues  (list)
+  // /api/admin/venues  (list / create)
   if (seg0 === 'venues' && !seg1) {
-    if (method !== 'GET') return badRequest(res, 'method_not_allowed')
-    return venues.list(req, res, user)
+    if (method === 'GET')  return venues.list(req, res, user)
+    if (method === 'POST') return venues.create(req, res, user)
+    return badRequest(res, 'method_not_allowed')
   }
 
   // /api/admin/venues/search

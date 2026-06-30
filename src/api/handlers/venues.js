@@ -187,6 +187,75 @@ function mapEditError(err) {
   }
 }
 
+// Maps a create_manual_venue RPC error to an HTTP status + sanitized client payload.
+// Error messages use the same 'code:field:detail' format as edit_venue.
+function mapCreateError(err) {
+  const msg   = err?.message ?? ''
+  const parts = msg.split(':')
+  const code  = (parts[0] ?? '').trim()
+  const field = (parts[1] ?? '').trim() || undefined
+
+  switch (code) {
+    case 'required':           return { status: 422, body: { ok: false, error: 'required', field } }
+    case 'invalid_type':       return { status: 400, body: { ok: false, error: 'invalid_type', field } }
+    case 'invalid_value':      return { status: 400, body: { ok: false, error: 'invalid_value', field } }
+    case 'invalid_coordinates':return { status: 400, body: { ok: false, error: 'invalid_coordinates' } }
+    case 'invalid actor':      return { status: 400, body: { ok: false, error: 'invalid_actor' } }
+    case 'unknown field':      return { status: 400, body: { ok: false, error: 'unknown_field', field } }
+    case 'empty fields':       return { status: 400, body: { ok: false, error: 'missing_fields' } }
+    case 'duplicate_venue':    return { status: 409, body: { ok: false, error: 'duplicate_venue' } }
+    default:                   return null
+  }
+}
+
+// POST /api/admin/venues
+export async function create(req, res, user) {
+  const body = req.body ?? {}
+
+  // Never accept created_by, origin, or actor from the browser.
+  // Actor comes exclusively from the authenticated session.
+  const fields = body.fields
+  const override_reason = typeof body.override_reason === 'string'
+    ? body.override_reason.trim() || null
+    : null
+
+  if (fields == null || typeof fields !== 'object' || Array.isArray(fields)) {
+    return badRequest(res, 'missing_fields')
+  }
+  if (Object.keys(fields).length === 0) return badRequest(res, 'missing_fields')
+
+  const actor = user.email
+
+  const db = getAdminClient()
+
+  const { data, error } = await db.rpc('create_manual_venue', {
+    p_fields:          fields,
+    p_actor:           actor,
+    p_override_reason: override_reason,
+  })
+
+  if (error) {
+    const mapped = mapCreateError(error)
+    if (mapped) return res.status(mapped.status).json(mapped.body)
+    return serverError(res, 'create_manual_venue rpc failed', error)
+  }
+
+  if (!data || data.ok !== true) {
+    return serverError(res, 'create_manual_venue returned non-ok', data)
+  }
+
+  // Fetch the full venue record so the client can navigate to the detail panel.
+  const { data: venue, error: fetchErr } = await db
+    .from('venues_catalog')
+    .select('*')
+    .eq('id', data.venue_id)
+    .single()
+
+  if (fetchErr) return serverError(res, 'venue fetch after create failed', fetchErr)
+
+  return res.status(201).json({ ok: true, venue_id: data.venue_id, venue })
+}
+
 // PATCH /api/admin/venues/:id
 export async function update(req, res, user, venueId) {
   if (!UUID_RE.test(venueId)) return badRequest(res, 'invalid_venue_id')
